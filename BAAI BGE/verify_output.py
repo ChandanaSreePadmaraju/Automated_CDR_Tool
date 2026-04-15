@@ -8,7 +8,7 @@ from docx import Document
 from docx.oxml.ns import qn
 from lxml import etree
 
-OUTPUT   = 'output/Filled_CDR_v5.docx'
+OUTPUT   = 'output/Filled_CDR.docx'
 TEMPLATE = 'Template_D001024021 CDR ISO 17664-2 (2021) ProductName RX.Y Rev C.docx'
 
 PASS = "\033[92m[PASS]\033[0m"

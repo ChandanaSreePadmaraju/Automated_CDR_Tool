@@ -67,17 +67,39 @@ def remove_styled_paragraphs(doc: Document) -> None:
 
 def remove_template_instructions(doc: Document) -> None:
     """
-    Remove body-level paragraphs whose full text is exactly '<' or '>'.
-    These are the opening/closing markers of template instruction blocks.
+    Remove template instruction blocks delimited by '<' ... '>' paragraphs.
+
+    A block opens when a paragraph's text is exactly '<' or starts with '< '
+    and closes when a paragraph's text is exactly '>' or starts with '> '.
+    Every paragraph in the block (both markers inclusive) is removed.
+    This handles multi-paragraph instruction notes such as:
+        < note:
+        The Product identification RX.Y ...
+        >
     """
     if not _CFG.get("remove_template_instructions", False):
         return
 
     body = doc.element.body
-    to_remove = [
-        e for e in list(body)
-        if e.tag == f"{{{_NS}}}p" and _para_text(e) in ("<", ">")
-    ]
+    to_remove = []
+    in_block = False
+
+    for e in list(body):
+        if e.tag != f"{{{_NS}}}p":
+            continue
+        text = _para_text(e)
+        if not in_block:
+            if text == "<" or text.startswith("< "):
+                in_block = True
+                to_remove.append(e)
+                # Single-line block: e.g. '< DELETE THIS >'; close immediately
+                if text.endswith(">") and len(text) > 1:
+                    in_block = False
+        else:
+            to_remove.append(e)
+            if text == ">" or text.startswith("> "):
+                in_block = False
+
     for e in to_remove:
         body.remove(e)
 

@@ -153,4 +153,18 @@ def extract_section(
             image_parts = _extract_and_remap_images(deep, doc)
             body_items.append({"type": "table", "xml": etree.tostring(deep), "image_parts": image_parts})
 
+    # Strip trailing empty paragraphs (no text, no drawings) — avoids
+    # inserting long runs of blank lines that appear at the end of sections
+    # in the data doc (e.g. 18 empty ListParagraph lines after References table).
+    while body_items:
+        last = body_items[-1]
+        if last["type"] == "paragraph":
+            p_elem = etree.fromstring(last["xml"])
+            has_text    = bool(''.join(t.text or '' for t in p_elem.iter(qn('w:t'))).strip())
+            has_drawing = bool(list(p_elem.iter(qn('w:drawing'))))
+            if not has_text and not has_drawing:
+                body_items.pop()
+                continue
+        break
+
     return {"items": body_items}

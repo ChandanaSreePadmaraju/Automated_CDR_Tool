@@ -167,7 +167,17 @@ def fill_template(
 
     # Only process matched headings; reverse by template paragraph index so
     # content insertions don't shift paragraph indices of later headings.
-    valid_matches = [m for m in matches if m["matched_heading"] is not None]
+    import json, os as _os
+    _prompts_file = _os.path.join(_os.path.dirname(__file__), "..", "prompts.json")
+    with open(_prompts_file, "r", encoding="utf-8") as _pf:
+        _prompts_cfg = json.load(_pf)
+    _skip_headings = {h.lower() for h in _prompts_cfg.get("skip_template_headings", [])}
+
+    valid_matches = [
+        m for m in matches
+        if m["matched_heading"] is not None
+        and m["template_heading"]["text"].lower() not in _skip_headings
+    ]
     valid_matches.sort(
         key=lambda m: m["template_heading"]["paragraph_index"],
         reverse=True,
