@@ -1,23 +1,40 @@
 {
+    "model_name": "BAAI/bge-base-en-v1.5",
     "query_prefix": "Represent this sentence for searching relevant passages: ",
 
     "heading_mappings": {
-        "Compliance Checklist": "Test Result",
+        "Compliance Checklist": "Test Record",
         "Record history": "Document Revision History"
     },
 
     "skip_template_headings": ["Purpose", "Scope"],
 
+    "sections_keep_first_n_tables": {
+        "Compliance Checklist": 1
+    },
+
+    "sections_filter_heading_content": ["Compliance Checklist"],
 
     "post_processing": {
         "styles_to_remove": ["Guidance"],
         "remove_template_instructions": true,
+        "strip_inline_angle_brackets": true,
+        "remove_paragraphs_with_text": [
+            "Note: for template information, see custom properties of this document"
+        ],
+        "remove_preamble_before_first_heading": true,
         "remove_empty_table_rows": true,
         "set_all_text_black": true,
         "sort_table_alphabetically_under_headings": [
             "References",
             "Definitions & abbreviations"
         ],
+        "definitions_fixed_rows": [
+            ["CDR",   "Compliance Data Record"],
+            ["ISO",   "International Standardization Organization"],
+            ["IGT-S", "Image Guided Therapy - Systems"]
+        ],
+        "definitions_heading": "Definitions & abbreviations",
         "remove_sections": [
             "Pre-created CDR history"
         ],

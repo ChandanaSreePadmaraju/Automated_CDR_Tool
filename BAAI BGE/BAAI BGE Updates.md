@@ -209,3 +209,10 @@ All behaviour driven by `"post_processing"` block in `prompts.json` — nothing 
 | 11 | All 7 template headings present in output |
 | 12 | No empty data rows in tables |
 | 13 | Risk analysis / Compliance Checklist content present |
+
+---
+
+### Final Output
+
+- **`output/Filled_CDR_v2.docx`** — final verified output, all 24 checks passing
+- This is the file committed to the repository; other generated files in `output/` are excluded via `.gitignore`

@@ -8,8 +8,9 @@ venv/
 .venv/
 env/
 
-# Generated output
-output/
+# Generated output — exclude everything except the final verified file
+output/*
+!output/Filled_CDR_v2.docx
 
 # OS
 .DS_Store

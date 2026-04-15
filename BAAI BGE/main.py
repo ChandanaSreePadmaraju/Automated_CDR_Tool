@@ -68,6 +68,17 @@ def main() -> None:
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
+    # Auto-version: if the file already exists, append _v2, _v3, … until free
+    if os.path.isfile(output_path):
+        base, ext = os.path.splitext(output_path)
+        # Strip any existing _vN suffix so we always count from the base name
+        import re as _re
+        base = _re.sub(r'_v\d+$', '', base)
+        version = 2
+        while os.path.isfile(f"{base}_v{version}{ext}"):
+            version += 1
+        output_path = f"{base}_v{version}{ext}"
+
     if not os.path.isfile(template_path):
         print(f"[ERROR] Template not found: {template_path}")
         return

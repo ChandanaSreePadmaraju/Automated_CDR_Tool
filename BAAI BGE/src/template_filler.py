@@ -172,6 +172,18 @@ def fill_template(
     with open(_prompts_file, "r", encoding="utf-8") as _pf:
         _prompts_cfg = json.load(_pf)
     _skip_headings = {h.lower() for h in _prompts_cfg.get("skip_template_headings", [])}
+    # keep_first_n: for these headings, keep the first N template tables and
+    # only clear what follows them (rather than clearing the whole section).
+    _keep_n: dict[str, int] = {
+        k.lower(): v
+        for k, v in _prompts_cfg.get("sections_keep_first_n_tables", {}).items()
+    }
+    # filter_headings: for these sections, skip any extracted item that is a
+    # heading paragraph (avoids sub-headings like "Test Administration" appearing
+    # in the Compliance Checklist section).
+    _filter_heading_sections: set[str] = {
+        h.lower() for h in _prompts_cfg.get("sections_filter_heading_content", [])
+    }
 
     valid_matches = [
         m for m in matches
@@ -203,10 +215,24 @@ def fill_template(
             return False
         return pStyle.get(f"{{{ns}}}val", "") in heading_style_ids
 
+    def _is_layout_para(elem) -> bool:
+        """True if elem is a paragraph used only for page layout (page break or sectPr)."""
+        if elem.tag != f"{{{ns}}}p":
+            return False
+        for br in elem.iter(f"{{{ns}}}br"):
+            if br.get(f"{{{ns}}}type") == "page":
+                return True
+        pPr = elem.find(f"{{{ns}}}pPr")
+        if pPr is not None and pPr.find(f"{{{ns}}}sectPr") is not None:
+            return True
+        return False
+
     def _clear_section(heading_elem) -> None:
         """
         Remove every body element immediately after *heading_elem* up to
         (but not including) the next heading element at any level.
+        Preserves trailing page-break / sectPr paragraphs so that section
+        separation is maintained in the filled document.
         """
         body = heading_elem.getparent()
         body_children = list(body)
@@ -219,6 +245,10 @@ def fill_template(
             if _is_heading_elem(elem):
                 break
             to_remove.append(elem)
+        # Keep trailing layout paragraphs (page breaks / sectPr) in place so
+        # the section boundary spacing survives after content replacement.
+        while to_remove and _is_layout_para(to_remove[-1]):
+            to_remove.pop()
         for elem in to_remove:
             body.remove(elem)
 
@@ -238,11 +268,47 @@ def fill_template(
 
         # Anchor: start from the heading's raw lxml element
         anchor = template.paragraphs[tmpl_h["paragraph_index"]]._p
+        tmpl_h_lower = tmpl_h["text"].lower()
 
-        # Remove original template placeholder content under this heading
-        _clear_section(anchor)
+        if tmpl_h_lower in _keep_n:
+            # Partial clear: keep first N tables after the heading, remove the rest.
+            n = _keep_n[tmpl_h_lower]
+            body = anchor.getparent()
+            body_children = list(body)
+            start = body_children.index(anchor)
+            tables_seen = 0
+            after_kept = None   # last kept element becomes the new anchor
+            to_remove = []
+            for elem in body_children[start + 1:]:
+                if _is_heading_elem(elem):
+                    break
+                if elem.tag == f"{{{ns}}}tbl":
+                    tables_seen += 1
+                    if tables_seen <= n:
+                        after_kept = elem
+                        continue
+                to_remove.append(elem)
+            for elem in to_remove:
+                body.remove(elem)
+            if after_kept is not None:
+                anchor = after_kept
+        else:
+            # Full clear of all template placeholder content under this heading
+            _clear_section(anchor)
+
+        # Filter flags for this heading
+        filter_hdgs = tmpl_h_lower in _filter_heading_sections
 
         for item in content["items"]:
+            # Optionally skip heading paragraphs from sub-sections
+            if filter_hdgs and item["type"] == "paragraph":
+                from lxml import etree as _etree
+                p_elem = _etree.fromstring(item["xml"])
+                pPr = p_elem.find(f"{{{ns}}}pPr")
+                if pPr is not None:
+                    pStyle = pPr.find(f"{{{ns}}}pStyle")
+                    if pStyle is not None and pStyle.get(f"{{{ns}}}val", "") in heading_style_ids:
+                        continue
             anchor = _insert_xml_after(anchor, item["xml"])
             all_image_parts.extend(item.get("image_parts", []))
 

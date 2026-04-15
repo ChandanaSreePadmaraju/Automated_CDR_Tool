@@ -11,8 +11,6 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
-MODEL_NAME = "BAAI/bge-base-en-v1.5"
-
 # Load all prompts from the shared prompts.json file
 _PROMPTS_FILE = os.path.join(os.path.dirname(__file__), "..", "prompts.json")
 with open(_PROMPTS_FILE, "r", encoding="utf-8") as _f:
@@ -21,11 +19,14 @@ with open(_PROMPTS_FILE, "r", encoding="utf-8") as _f:
 # BGE retrieval prefix — prepended to template headings before encoding
 _QUERY_PREFIX: str = _PROMPTS["query_prefix"]
 
+# Model name is read from prompts.json so it can be changed without touching code
+_MODEL_NAME: str = _PROMPTS.get("model_name", "BAAI/bge-base-en-v1.5")
+
 
 def load_model() -> SentenceTransformer:
     """Download (first run only) and return the BGE model."""
-    print(f"Loading model: {MODEL_NAME}")
-    return SentenceTransformer(MODEL_NAME)
+    print(f"Loading model: {_MODEL_NAME}")
+    return SentenceTransformer(_MODEL_NAME)
 
 
 def match_headings(
