@@ -1,0 +1,24 @@
+{
+    "query_prefix": "Represent this sentence for searching relevant passages: ",
+
+    "heading_mappings": {
+        "Compliance Checklist": "Test Result"
+    },
+
+    "post_processing": {
+        "styles_to_remove": ["Guidance"],
+        "remove_template_instructions": true,
+        "remove_empty_table_rows": true,
+        "set_all_text_black": true,
+        "sort_table_alphabetically_under_headings": [
+            "References",
+            "Definitions & abbreviations"
+        ],
+        "remove_sections": [
+            "Pre-created CDR history"
+        ],
+        "header_footer_placeholders": [
+            "<ProductName RX.Y>"
+        ]
+    }
+}
