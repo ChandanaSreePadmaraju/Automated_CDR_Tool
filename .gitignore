@@ -8,9 +8,11 @@ venv/
 .venv/
 env/
 
-# Generated output — exclude everything except the final verified file
-output/*
-!output/Filled_CDR_v2.docx
+# Generated output
+output/
+
+# Word temporary lock files
+~$*
 
 # OS
 .DS_Store

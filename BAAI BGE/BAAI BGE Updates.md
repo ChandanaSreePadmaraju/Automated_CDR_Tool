@@ -2,6 +2,16 @@
 
 ---
 
+## April 20, 2026
+
+### Cleanup
+
+- Removed dev/debug scripts: `diag.py`, `quick_check.py`, `verify_output.py`
+- Updated `.gitignore`: entire `output/` excluded (no pinned file), added `~$*` for Word lock files
+- Output is now auto-versioned at runtime (`Filled_CDR.docx`, `_v2`, `_v3`, …)
+
+---
+
 ## April 14, 2026
 
 **Selected Model:** `bge-base-en-v1.5` → fast + accurate enough
@@ -52,15 +62,14 @@ Template heading  ──► BGE (match) ──► Find section in data doc
 BAAI BGE/
 ├── main.py                    # CLI entry point — runs the full pipeline
 ├── prompts.json               # All config (query prefix, heading mappings, post-processing flags)
-├── verify_output.py           # 24-check verification suite for the output document
+├── requirements.txt           # Python dependencies
 ├── src/
 │   ├── heading_extractor.py   # Step 1 — extract headings from any .docx
 │   ├── heading_matcher.py     # Step 2 — BGE semantic heading matching
 │   ├── content_extractor.py   # Step 3 — extract section content as raw XML
 │   ├── template_filler.py     # Step 4 — insert content into template, save output
-│   └── post_processor.py      # Step 5 — 7 post-processing cleanup passes
-└── output/
-    └── Filled_CDR.docx        # Generated output
+│   └── post_processor.py      # Step 5 — 11 post-processing cleanup passes
+└── output/                    # Generated output (git-ignored)
 ```
 
 ---
@@ -97,7 +106,9 @@ python main.py `
 - Prepends BGE retrieval prefix (`"Represent this sentence for searching relevant passages: "`) to template headings before encoding
 - Computes cosine similarity matrix between template headings and data doc headings
 - **Explicit override support** — `heading_mappings` in `prompts.json` forces specific matches (score = 1.0) bypassing semantic matching
-  - Example: `"Compliance Checklist"` → `"Test Result"` (semantic score was 0.509, below threshold)
+  - Example: `"Compliance Checklist"` → `"Test Record"` (semantic score was below threshold)
+  - Example: `"Record history"` → `"Document Revision History"`
+- **`skip_template_headings`** — list of template headings to skip entirely (content kept as-is from template)
 - Returns best match per template heading, or `None` if below threshold
 
 ---
@@ -125,23 +136,29 @@ python main.py `
   - Adds image bytes to `word/media/img_copied_rIdXX.ext`
   - Adds `<Relationship>` entries to `word/_rels/document.xml.rels`
   - Replaces **only** `rId_CDRCOPY_...` strings in `document.xml` — never touches template-original rIds
-- Calls all 7 `post_processor` passes before saving
+- Calls all 11 `post_processor` passes before saving
+- **`sections_keep_first_n_tables`** — for specified sections, keeps only the first N tables (e.g. `"Compliance Checklist": 1`)
+- **`sections_filter_heading_content`** — strips sub-heading content from specified sections before insertion
 
 ---
 
-### `src/post_processor.py` — Step 5 (7 Passes)
+### `src/post_processor.py` — Step 5 (11 Passes)
 
 All behaviour driven by `"post_processing"` block in `prompts.json` — nothing hardcoded.
 
 | Pass | Function | What it does |
 |:----:|:---------|:-------------|
 | 1 | `remove_styled_paragraphs` | Removes all paragraphs with styles listed in `styles_to_remove` (e.g. `"Guidance"`) |
-| 2 | `remove_template_instructions` | Removes standalone `<` and `>` marker paragraphs left from template instruction blocks |
+| 2 | `remove_template_instructions` | Removes multi-paragraph `< ... >` instruction blocks left from the template |
 | 3 | `remove_empty_table_rows` | Removes empty non-header table rows |
-| 4 | `set_all_text_black` | Strips all explicit `<w:color>` elements so all text renders as black |
+| 4 | `set_all_text_black` | Forces all text to black; removes GuidanceChar rStyle overrides; inserts explicit `<w:color val="000000"/>` |
 | 5 | `sort_tables_alphabetically` | Sorts data rows of specified tables alphabetically by first column (e.g. References, Definitions) |
 | 6 | `remove_sections` | Removes entire sections (heading + all content) by name (e.g. `"Pre-created CDR history"`) |
 | 7 | `fill_header_footer_placeholders` | Replaces product name placeholders (e.g. `<ProductName RX.Y>`) in body, headers, and footers |
+| 8 | `remove_preamble_before_first_heading` | Removes instruction-page content before first heading; preserves cover and TOC page-break paragraphs |
+| 9 | `strip_inline_angle_brackets` | Removes standalone `<` and `>` `<w:r>` runs left as bracket artifacts in body paragraphs |
+| 10 | `remove_paragraphs_with_text` | Removes body paragraphs containing specific strings (e.g. template metadata notes) |
+| 11 | `inject_definitions_fixed_rows` | Ensures fixed abbreviation rows (e.g. CDR, ISO, IGT-S) always exist in the Definitions table |
 
 **Pass 7 details — multi-run placeholder collapse:**
 - Uses `lxml` directly (not `python-docx` `.runs` API) to avoid `AttributeError` on raw-inserted XML elements
@@ -155,16 +172,42 @@ All behaviour driven by `"post_processing"` block in `prompts.json` — nothing 
 
 ```json
 {
+    "model_name": "BAAI/bge-base-en-v1.5",
     "query_prefix": "Represent this sentence for searching relevant passages: ",
+
     "heading_mappings": {
-        "Compliance Checklist": "Test Result"
+        "Compliance Checklist": "Test Record",
+        "Record history": "Document Revision History"
     },
+
+    "skip_template_headings": ["Purpose", "Scope"],
+
+    "sections_keep_first_n_tables": {
+        "Compliance Checklist": 1
+    },
+
+    "sections_filter_heading_content": ["Compliance Checklist"],
+
     "post_processing": {
         "styles_to_remove": ["Guidance"],
         "remove_template_instructions": true,
+        "strip_inline_angle_brackets": true,
+        "remove_paragraphs_with_text": [
+            "Note: for template information, see custom properties of this document"
+        ],
+        "remove_preamble_before_first_heading": true,
         "remove_empty_table_rows": true,
         "set_all_text_black": true,
-        "sort_table_alphabetically_under_headings": ["References", "Definitions & abbreviations"],
+        "sort_table_alphabetically_under_headings": [
+            "References",
+            "Definitions & abbreviations"
+        ],
+        "definitions_fixed_rows": [
+            ["CDR",   "Compliance Data Record"],
+            ["ISO",   "International Standardization Organization"],
+            ["IGT-S", "Image Guided Therapy - Systems"]
+        ],
+        "definitions_heading": "Definitions & abbreviations",
         "remove_sections": ["Pre-created CDR history"],
         "header_footer_placeholders": ["<ProductName RX.Y>"]
     }
@@ -173,9 +216,13 @@ All behaviour driven by `"post_processing"` block in `prompts.json` — nothing 
 
 **Configurable without code changes:**
 - Add more heading overrides in `heading_mappings`
+- Add headings to skip in `skip_template_headings` (template content kept as-is)
+- Control how many tables to keep per section via `sections_keep_first_n_tables`
 - Add more placeholder strings in `header_footer_placeholders`
 - Add/remove section names in `remove_sections`
 - Add/remove table headings in `sort_table_alphabetically_under_headings`
+- Add/remove fixed rows in `definitions_fixed_rows`
+- Add strings to purge in `remove_paragraphs_with_text`
 
 ---
 
@@ -190,29 +237,8 @@ All behaviour driven by `"post_processing"` block in `prompts.json` — nothing 
 
 ---
 
-### Verification — `verify_output.py`
-
-24-check automated suite. All checks **PASS** on final output:
-
-| # | Check |
-|:--:|:------|
-| 1 | Cover page cells — placeholder replaced with product name |
-| 2 | Cover page image rIds valid (template logo preserved as `rId12`) |
-| 3 | No leftover `rId_CDRCOPY_...` placeholder rIds in document XML |
-| 4 | All `r:embed` refs resolve to a relationship |
-| 5 | All image media files exist inside the zip |
-| 6 | No `<ProductName RX.Y>` remaining in body |
-| 7 | No `<ProductName RX.Y>` remaining in headers/footers |
-| 8 | All Guidance-style paragraphs removed |
-| 9 | No coloured text — all black |
-| 10 | `"Pre-created CDR history"` section removed |
-| 11 | All 7 template headings present in output |
-| 12 | No empty data rows in tables |
-| 13 | Risk analysis / Compliance Checklist content present |
-
----
-
 ### Final Output
 
-- **`output/Filled_CDR_v2.docx`** — final verified output, all 24 checks passing
-- This is the file committed to the repository; other generated files in `output/` are excluded via `.gitignore`
+- Output is auto-versioned: `output/Filled_CDR.docx`, `output/Filled_CDR_v2.docx`, `output/Filled_CDR_v3.docx` …
+- The entire `output/` folder is git-ignored — generated files are never committed
+- Run the pipeline to regenerate the output at any time
