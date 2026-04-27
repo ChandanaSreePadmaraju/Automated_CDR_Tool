@@ -45,7 +45,7 @@ def _heading_style_ids(doc: Document) -> set:
 
 
 # ---------------------------------------------------------------------------
-# Pass 1 — Remove paragraphs with specific styles (e.g. "Guidance")
+# Pass 3 — Remove paragraphs with specific styles (e.g. "Guidance")
 # ---------------------------------------------------------------------------
 
 def remove_styled_paragraphs(doc: Document) -> None:
@@ -65,7 +65,7 @@ def remove_styled_paragraphs(doc: Document) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 2 — Remove template instruction bracket markers  (< / >)
+# Pass 4 — Remove template instruction bracket markers  (< / >)
 # ---------------------------------------------------------------------------
 
 def remove_template_instructions(doc: Document) -> None:
@@ -108,7 +108,7 @@ def remove_template_instructions(doc: Document) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 3 — Remove empty table rows
+# Pass 7 — Remove empty table rows
 # ---------------------------------------------------------------------------
 
 def remove_empty_table_rows(doc: Document) -> None:
@@ -131,7 +131,7 @@ def remove_empty_table_rows(doc: Document) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 4 — Set all text colour to black
+# Pass 10 — Set all text colour to black
 # ---------------------------------------------------------------------------
 
 def set_all_text_black(doc: Document) -> None:
@@ -180,9 +180,29 @@ def set_all_text_black(doc: Document) -> None:
         black.set(f"{{{_NS}}}val", "000000")
         rPr.insert(0, black)
 
+    # Also apply to headers and footers — they are separate XML parts not in body
+    for section in doc.sections:
+        for part in (
+            section.header, section.even_page_header, section.first_page_header,
+            section.footer, section.even_page_footer, section.first_page_footer,
+        ):
+            try:
+                for rPr in part._element.iter(f"{{{_NS}}}rPr"):
+                    rStyle = rPr.find(f"{{{_NS}}}rStyle")
+                    if rStyle is not None and rStyle.get(f"{{{_NS}}}val", "") in guidance_rStyle_ids:
+                        rPr.remove(rStyle)
+                    color = rPr.find(f"{{{_NS}}}color")
+                    if color is not None:
+                        rPr.remove(color)
+                    black = etree.Element(f"{{{_NS}}}color")
+                    black.set(f"{{{_NS}}}val", "000000")
+                    rPr.insert(0, black)
+            except Exception:
+                pass
+
 
 # ---------------------------------------------------------------------------
-# Pass 5 — Sort tables alphabetically under specified headings
+# Pass 13 — Sort tables alphabetically under specified headings
 # ---------------------------------------------------------------------------
 
 def sort_tables_alphabetically(doc: Document) -> None:
@@ -237,7 +257,7 @@ def _sort_table(tbl_elem) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 6 — Reduce font size for NOTE paragraphs
+# Pass 8 — Reduce font size for NOTE paragraphs
 # ---------------------------------------------------------------------------
 
 def set_note_text_size(doc: Document) -> None:
@@ -278,7 +298,7 @@ def set_note_text_size(doc: Document) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 7 — Strip superscript formatting from list-marker runs
+# Pass 9 — Strip superscript formatting from list-marker runs
 # ---------------------------------------------------------------------------
 
 _MARKER_RE = re.compile(r'^\d+[.\s]*$')
@@ -326,7 +346,7 @@ def strip_superscript_list_markers(doc: Document) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 8 — Remove specified sections (heading + content)
+# Pass 14 — Remove specified sections (heading + content)
 # ---------------------------------------------------------------------------
 
 def remove_sections(doc: Document) -> None:
@@ -364,8 +384,56 @@ def remove_sections(doc: Document) -> None:
                     break
 
 
+# Pass 11
+def remove_blank_paragraph_after_headings(doc: Document) -> None:
+    """Remove ALL consecutive empty paragraphs that immediately follow a Heading.
+
+    Keeps layout paragraphs (page-breaks / inline sectPr) and paragraphs
+    with images intact.
+    """
+    if not _CFG.get("remove_blank_para_after_headings", False):
+        return
+
+    def _is_blank(elem) -> bool:
+        if elem.tag != f"{{{_NS}}}p":
+            return False
+        pPr = elem.find(f"{{{_NS}}}pPr")
+        if pPr is not None and pPr.find(f"{{{_NS}}}sectPr") is not None:
+            return False  # layout paragraph — keep
+        for br in elem.iter(f"{{{_NS}}}br"):
+            if br.get(f"{{{_NS}}}type") == "page":
+                return False  # page-break — keep
+        text = ''.join(t.text or '' for t in elem.iter(f"{{{_NS}}}t")).strip()
+        has_drawing = any(n.tag == qn('w:drawing') for n in elem.iter())
+        return not text and not has_drawing
+
+    h_ids = _heading_style_ids(doc)
+    body_elem = doc.element.body
+
+    # Iterate live over children; re-read list after each removal so indices
+    # stay correct even though we're removing elements.
+    changed = True
+    while changed:
+        changed = False
+        children = list(body_elem)
+        for i, elem in enumerate(children):
+            if elem.tag != f"{{{_NS}}}p":
+                continue
+            if _para_style_id(elem) not in h_ids:
+                continue
+            # Remove all consecutive blank paragraphs directly after this heading
+            j = i + 1
+            while j < len(children) and _is_blank(children[j]):
+                try:
+                    body_elem.remove(children[j])
+                    changed = True
+                except Exception:
+                    pass
+                j += 1
+
+
 # ---------------------------------------------------------------------------
-# Pass 9 — Fill placeholders throughout document
+# Pass 1 — Fill placeholders throughout document
 # ---------------------------------------------------------------------------
 
 def fill_header_footer_placeholders(doc: Document, product_name: str | None) -> None:
@@ -443,9 +511,10 @@ def fill_header_footer_placeholders(doc: Document, product_name: str | None) -> 
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Public API — passes 2, 5, 6, 11, 12, 15
 # ---------------------------------------------------------------------------
 
+# Pass 2
 def remove_preamble_before_first_heading(doc: Document) -> None:
     """
     Remove visible-text paragraphs and duplicate page-break paragraphs that
@@ -501,6 +570,7 @@ def remove_preamble_before_first_heading(doc: Document) -> None:
         body.remove(e)
 
 
+# Pass 5
 def strip_inline_angle_brackets(doc: Document) -> None:
     """
     Remove standalone '<' and '>' runs from every body paragraph.
@@ -520,6 +590,7 @@ def strip_inline_angle_brackets(doc: Document) -> None:
                     parent.remove(r)
 
 
+# Pass 6
 def remove_paragraphs_with_text(doc: Document) -> None:
     """
     Remove any body-level paragraph whose text contains one of the
@@ -541,6 +612,7 @@ def remove_paragraphs_with_text(doc: Document) -> None:
         body.remove(e)
 
 
+# Pass 12
 def inject_definitions_fixed_rows(doc: Document) -> None:
     """
     Ensure specific rows (e.g. CDR, ISO, IGT-S) always exist in the
@@ -628,6 +700,20 @@ def inject_definitions_fixed_rows(doc: Document) -> None:
 
         tbl_elem.append(new_row)
 
+# Pass 15
+def mark_toc_dirty(doc: Document) -> None:
+    """
+    Mark every TOC field as dirty so Word auto-updates the Table of Contents
+    when the document is first opened.
+    """
+    W = f"{{{_NS}}}"
+    for p_elem in doc.element.body.iter(f"{W}p"):
+        instr_texts = [(t.text or "").strip() for t in p_elem.iter(f"{W}instrText")]
+        if not any(txt.upper().startswith("TOC") for txt in instr_texts):
+            continue
+        for fldChar in p_elem.iter(f"{W}fldChar"):
+            if fldChar.get(f"{W}fldCharType") == "begin":
+                fldChar.set(f"{W}dirty", "1")
 
 def apply_all(doc: Document, product_name: str | None = None) -> None:
     """Run every configured post-processing pass on *doc* in-place."""
@@ -641,6 +727,8 @@ def apply_all(doc: Document, product_name: str | None = None) -> None:
     set_note_text_size(doc)
     strip_superscript_list_markers(doc)
     set_all_text_black(doc)
+    remove_blank_paragraph_after_headings(doc)
     inject_definitions_fixed_rows(doc)
     sort_tables_alphabetically(doc)
     remove_sections(doc)
+    mark_toc_dirty(doc)

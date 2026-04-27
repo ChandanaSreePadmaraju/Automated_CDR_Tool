@@ -4,6 +4,58 @@
 
 ## April 27, 2026
 
+### Force-Black Text Extended to Headers / Footers
+
+- `set_all_text_black()` (Pass 10) now loops over `doc.sections` and applies the same `<w:color w:val="000000"/>` injection to every header and footer part (`header`, `even_page_header`, `first_page_header`, `footer`, `even_page_footer`, `first_page_footer`)
+- Fixes purple/pink coloured text that appeared in the document header (product name line) and footer (revision line)
+
+### New Pass 11 — `remove_blank_paragraph_after_headings`
+
+- New post-processing pass controlled by `"remove_blank_para_after_headings": true` in `prompts.json`
+- Removes **all consecutive empty paragraphs** that appear immediately after any Heading-styled paragraph
+- Uses a while-loop + re-scan approach so multiple blank lines after one heading are all removed in one call
+- Preserves layout paragraphs (inline `<w:sectPr>`) and page-break paragraphs
+
+### New Pass 15 — `mark_toc_dirty`
+
+- New post-processing pass added unconditionally at the end of `apply_all()`
+- Iterates all body paragraphs looking for field instructions (`<w:instrText>`) that start with `"TOC"`
+- Sets `w:dirty="1"` on the `begin` `<w:fldChar>` so Word automatically refreshes the Table of Contents on first open
+
+### `sections_filter_heading_content` Cleared
+
+- Config key `"sections_filter_heading_content"` changed from `["Compliance Checklist"]` to `[]`
+- Previous value caused sub-headings (**Test Administration**, **Test Measurements**, **Test Result**) inside the "Test Record" section to be silently dropped during extraction
+- Now all heading-styled paragraphs inside extracted sections are preserved in the output
+
+### Pass Numbering Cleanup
+
+- All pass-number comments in `post_processor.py` now match the actual execution order in `apply_all()`:
+
+| Pass | Function |
+|---|---|
+| 1 | `fill_header_footer_placeholders` |
+| 2 | `remove_preamble_before_first_heading` |
+| 3 | `remove_styled_paragraphs` |
+| 4 | `remove_template_instructions` |
+| 5 | `strip_inline_angle_brackets` |
+| 6 | `remove_paragraphs_with_text` |
+| 7 | `remove_empty_table_rows` |
+| 8 | `set_note_text_size` |
+| 9 | `strip_superscript_list_markers` |
+| 10 | `set_all_text_black` |
+| 11 | `remove_blank_paragraph_after_headings` |
+| 12 | `inject_definitions_fixed_rows` |
+| 13 | `sort_tables_alphabetically` |
+| 14 | `remove_sections` |
+| 15 | `mark_toc_dirty` |
+
+- `mark_toc_dirty` moved to before `apply_all()` in the file (was incorrectly defined after the function that calls it)
+
+---
+
+## April 27, 2026
+
 ### Bullet / Numbered List Fix — `_merge_numbering` + `_NUMID_OFFSET`
 
 - **Problem:** Extracted sections containing bullet or numbered lists rendered as plain paragraphs in the output — the numbering definitions (`abstractNum`/`num` entries in `word/numbering.xml`) were missing from the output document.

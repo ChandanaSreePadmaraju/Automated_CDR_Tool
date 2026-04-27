@@ -16,7 +16,7 @@
     "sections_keep_first_n_tables": {},
 
 
-    "sections_filter_heading_content": ["Compliance Checklist"],
+    "sections_filter_heading_content": [],
 
     "post_processing": {
         "styles_to_remove": ["Guidance"],
@@ -31,6 +31,7 @@
         "note_text_size_half_pt": 18,
         "strip_superscript_list_markers": true,
         "set_all_text_black": true,
+        "remove_blank_para_after_headings": true,
         "sort_table_alphabetically_under_headings": [
             "References",
             "Definitions & abbreviations"

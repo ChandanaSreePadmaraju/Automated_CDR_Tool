@@ -53,7 +53,7 @@
 | 2 | `heading_matcher.py` | Encode template + data headings with BGE; cosine-similarity matrix; explicit `heading_mappings` overrides at score 1.0 |
 | 3 | `content_extractor.py` | Deep-copy + serialise every `<w:p>` / `<w:tbl>` in a section as raw XML bytes; remap image rIds to `rId_CDRCOPY_` placeholders; add `_NUMID_OFFSET` sentinel to all `<w:numId>` |
 | 4 | `template_filler.py` | Insert extracted XML after matched template headings (reverse order); strip inline `<w:sectPr>`; column-remap tables; inject pre-heading content; post-process; zip-level image copy + numbering merge |
-| 5 | `post_processor.py` | 13 cleanup passes: placeholder replacement, preamble removal, style removal, instruction block removal, angle-bracket stripping, paragraph text removal, empty row removal, NOTE font-size reduction, superscript marker removal, force-black text, definitions injection, table sort, section removal |
+| 5 | `post_processor.py` | 15 cleanup passes: placeholder replacement, preamble removal, style removal, instruction block removal, angle-bracket stripping, paragraph text removal, empty row removal, NOTE font-size reduction, superscript marker removal, force-black text (body + headers/footers), blank-para-after-heading removal, definitions injection, table sort, section removal, TOC dirty-marking |
 
 ### Key Bugs Fixed
 
@@ -66,9 +66,14 @@
 | "Record history" table layout wrong | `sections_remap_table_columns` + `_build_remapped_table()` — keeps template column structure |
 | Data-doc header/footer rIds in output | `_strip_inline_sectpr()` strips `<w:pPr><w:sectPr>` from all extracted elements before insertion |
 | Numbered list items with superscript markers | `strip_superscript_list_markers` pass removes `<w:vertAlign val="superscript"/>` from leading numeric runs only |
+| Purple/pink text in document headers/footers | `set_all_text_black` (Pass 10) extended to loop over all header/footer parts via `doc.sections` |
+| TOC not updating on open | `mark_toc_dirty` (Pass 15) sets `w:dirty="1"` on TOC `begin` field chars |
+| Extra blank lines after section headings | `remove_blank_paragraph_after_headings` (Pass 11) removes all consecutive empty paragraphs after any heading |
+| Sub-headings dropped from Compliance Checklist | `sections_filter_heading_content` cleared to `[]`; all heading-styled elements now preserved during extraction |
 
 ### Configuration (`prompts.json`)
 
-All pipeline behaviour is config-driven — no hardcoded document-specific values in code. Key config keys: `model_name`, `threshold`, `query_prefix`, `product_name`, `heading_mappings`, `sections_remap_table_columns`, `sections_keep_first_n_tables`, `sections_filter_heading_content`, and the full `post_processing` block (13 flags/lists).
+All pipeline behaviour is config-driven — no hardcoded document-specific values in code. Key config keys: `model_name`, `threshold`, `query_prefix`, `product_name`, `heading_mappings`, `sections_remap_table_columns`, `sections_keep_first_n_tables`, `sections_filter_heading_content`, and the full `post_processing` block (15 flags/lists).
+
 
 
