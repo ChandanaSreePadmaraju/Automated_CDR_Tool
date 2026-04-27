@@ -10,11 +10,13 @@
     },
 
     "sections_remap_table_columns": {
-        "Record history": [0, 1, 2, 3]
+        "Record history": [0, 1, 2, 3],
+        "References": [0, 2, 1]
     },
 
-    "sections_keep_first_n_tables": {},
+    "sections_keep_first_n_tables": {"Compliance Checklist": 1},
 
+    "sections_keep_template_content": ["Purpose", "Scope"],
 
     "sections_filter_heading_content": [],
 
@@ -28,7 +30,7 @@
         "remove_preamble_before_first_heading": true,
         "remove_empty_table_rows": true,
         "note_text_prefixes": ["NOTE"],
-        "note_text_size_half_pt": 18,
+        "note_text_size_half_pt": 16,
         "strip_superscript_list_markers": true,
         "set_all_text_black": true,
         "remove_blank_para_after_headings": true,

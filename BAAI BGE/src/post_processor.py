@@ -261,13 +261,15 @@ def _sort_table(tbl_elem) -> None:
 # ---------------------------------------------------------------------------
 
 def set_note_text_size(doc: Document) -> None:
-    """Reduce the font size of every paragraph whose text starts with a
-    configured NOTE prefix (e.g. "NOTE", "NOTE 1", "NOTE 2").
+    """Reduce the font size of NOTE paragraphs and all following paragraphs
+    that belong to the same NOTE block (until the next NOTE prefix, a heading,
+    or an empty paragraph that is not a list item).
 
-    Applies to both body paragraphs and paragraphs inside table cells.
+    Applies to body paragraphs only (not table cells — notes rarely appear
+    inside tables).
     Prefixes and target size are read from prompts.json:
       note_text_prefixes   : list[str]  – e.g. ["NOTE"]
-      note_text_size_half_pt: int       – half-points (18 = 9 pt)
+      note_text_size_half_pt: int       – half-points (16 = 8 pt)
     """
     prefixes  = [p.lower() for p in _CFG.get("note_text_prefixes", [])]
     size_val  = str(_CFG.get("note_text_size_half_pt", 18))
@@ -275,26 +277,70 @@ def set_note_text_size(doc: Document) -> None:
         return
 
     W = f"{{{_NS}}}"
+    h_ids = _heading_style_ids(doc)
 
-    for p_elem in doc.element.body.iter(f"{W}p"):
-        p_text = "".join(t.text or "" for t in p_elem.iter(f"{W}t")).strip()
-        if not any(p_text.lower().startswith(prefix) for prefix in prefixes):
-            continue
-
+    def _apply_size(p_elem) -> None:
         for r in p_elem.findall(f".//{W}r"):
             rPr = r.find(f"{W}rPr")
             if rPr is None:
                 rPr = etree.Element(f"{W}rPr")
                 r.insert(0, rPr)
-            # Remove any existing sz / szCs
             for tag in (f"{W}sz", f"{W}szCs"):
                 for old in rPr.findall(tag):
                     rPr.remove(old)
-            # Insert new sz and szCs
             sz = etree.SubElement(rPr, f"{W}sz")
             sz.set(f"{W}val", size_val)
             szCs = etree.SubElement(rPr, f"{W}szCs")
             szCs.set(f"{W}val", size_val)
+
+    # Process both body paragraphs and paragraphs inside table cells.
+    # For body paragraphs: track NOTE blocks across consecutive paragraphs.
+    # For table-cell paragraphs: apply size to the NOTE paragraph and all
+    # following paragraphs in the same cell until an empty paragraph or heading.
+
+    # --- Body-level paragraphs (block tracking) ---
+    body_paras = [
+        e for e in doc.element.body
+        if e.tag == f"{W}p"
+    ]
+
+    in_note = False
+    for p_elem in body_paras:
+        p_text = "".join(t.text or "" for t in p_elem.iter(f"{W}t")).strip()
+        style_id = _para_style_id(p_elem)
+
+        if style_id in h_ids:
+            in_note = False
+            continue
+
+        if any(p_text.lower().startswith(prefix) for prefix in prefixes):
+            in_note = True
+
+        if in_note:
+            _apply_size(p_elem)
+            if not p_text and style_id not in ("ListParagraph",):
+                in_note = False
+
+    # --- Table cell paragraphs ---
+    for tbl in doc.element.body.iter(f"{W}tbl"):
+        for tc in tbl.iter(f"{W}tc"):
+            cell_paras = list(tc.findall(f"{W}p"))
+            in_note = False
+            for p_elem in cell_paras:
+                p_text = "".join(t.text or "" for t in p_elem.iter(f"{W}t")).strip()
+                style_id = _para_style_id(p_elem)
+
+                if style_id in h_ids:
+                    in_note = False
+                    continue
+
+                if any(p_text.lower().startswith(prefix) for prefix in prefixes):
+                    in_note = True
+
+                if in_note:
+                    _apply_size(p_elem)
+                    if not p_text and style_id not in ("ListParagraph",):
+                        in_note = False
 
 
 # ---------------------------------------------------------------------------

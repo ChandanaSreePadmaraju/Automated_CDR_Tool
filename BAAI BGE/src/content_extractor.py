@@ -25,19 +25,22 @@ _PLACEHOLDER_COUNTER = itertools.count(1)
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _build_heading_level_map(doc: Document) -> dict:
+def _build_heading_style_id_map(doc: Document) -> dict:
     """
-    Return  { id(para._p): level_int }  for every heading paragraph.
-    Using object-identity on the lxml element avoids repeated string-parsing.
+    Return  { style_id: level_int }  for every Heading style in the document.
+
+    Uses style IDs (e.g. "Heading1", "Heading2") rather than lxml element
+    identity so the map can be used reliably across separate Document
+    instances and after garbage-collection cycles (lxml can return different
+    proxy objects for the same XML node, making id()-based lookups unreliable).
     """
-    level_map: dict = {}
-    for para in doc.paragraphs:
-        style_name = para.style.name
-        if style_name.startswith("Heading"):
-            parts = style_name.split()
+    style_map: dict = {}
+    for style in doc.styles:
+        if style.name and style.name.startswith("Heading"):
+            parts = style.name.split()
             level = int(parts[-1]) if parts[-1].isdigit() else 1
-            level_map[id(para._p)] = level
-    return level_map
+            style_map[style.style_id] = level
+    return style_map
 
 
 # Prefix that is guaranteed never to appear in real Word rId values.
@@ -142,8 +145,20 @@ def extract_section(
     if heading_para_index >= len(paragraphs):
         return {"items": []}
 
-    heading_p_elem    = paragraphs[heading_para_index]._p
-    heading_level_map = _build_heading_level_map(doc)
+    heading_p_elem       = paragraphs[heading_para_index]._p
+    heading_style_id_map = _build_heading_style_id_map(doc)
+
+    _NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+    def _elem_heading_level(elem):
+        """Return the heading level of *elem* (a w:p), or None if not a heading."""
+        pPr = elem.find(f"{{{_NS_W}}}pPr")
+        if pPr is None:
+            return None
+        ps = pPr.find(f"{{{_NS_W}}}pStyle")
+        if ps is None:
+            return None
+        return heading_style_id_map.get(ps.get(f"{{{_NS_W}}}val", ""))
 
     body_children = list(doc.element.body)
 
@@ -158,7 +173,8 @@ def extract_section(
 
         if elem.tag == qn("w:p"):
             # Stop at the next sibling or ancestor heading
-            if id(elem) in heading_level_map and heading_level_map[id(elem)] <= heading_level:
+            lv = _elem_heading_level(elem)
+            if lv is not None and lv <= heading_level:
                 break
             deep = copy.deepcopy(elem)
             _offset_numids(deep)
@@ -203,15 +219,21 @@ def extract_pre_heading_content(doc_path: str) -> dict:
     Returns the same ``{"items": [...]}`` structure as :func:`extract_section`.
     """
     doc = Document(doc_path)
-    heading_level_map = _build_heading_level_map(doc)
+    heading_style_id_map = _build_heading_style_id_map(doc)
     body_children = list(doc.element.body)
+
+    _NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
     body_items: list[dict] = []
 
     for elem in body_children:
-        # Stop as soon as we hit the first heading
-        if elem.tag == qn("w:p") and id(elem) in heading_level_map:
-            break
+        # Stop as soon as we hit the first heading (checked via style ID)
+        if elem.tag == qn("w:p"):
+            pPr = elem.find(f"{{{_NS_W}}}pPr")
+            if pPr is not None:
+                ps = pPr.find(f"{{{_NS_W}}}pStyle")
+                if ps is not None and ps.get(f"{{{_NS_W}}}val", "") in heading_style_id_map:
+                    break
 
         if elem.tag == qn("w:p"):
             deep = copy.deepcopy(elem)

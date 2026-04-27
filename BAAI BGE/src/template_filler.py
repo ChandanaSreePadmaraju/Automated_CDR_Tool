@@ -398,10 +398,17 @@ def fill_template(
     _filter_heading_sections: set[str] = {
         h.lower() for h in _prompts_cfg.get("sections_filter_heading_content", [])
     }
+    # keep_template_sections: for these headings, preserve the template's own
+    # content entirely — do NOT extract from the data doc or clear the template.
+    # Post-processing passes still run and fill placeholders / remove guidance.
+    _keep_tmpl_sections: set[str] = {
+        h.lower() for h in _prompts_cfg.get("sections_keep_template_content", [])
+    }
 
     valid_matches = [
         m for m in matches
         if m["matched_heading"] is not None
+        and m["template_heading"]["text"].lower() not in _keep_tmpl_sections
     ]
     valid_matches.sort(
         key=lambda m: m["template_heading"]["paragraph_index"],
