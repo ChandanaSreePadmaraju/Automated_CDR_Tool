@@ -2,6 +2,65 @@
 
 ---
 
+## April 27, 2026
+
+### Bullet / Numbered List Fix — `_merge_numbering` + `_NUMID_OFFSET`
+
+- **Problem:** Extracted sections containing bullet or numbered lists rendered as plain paragraphs in the output — the numbering definitions (`abstractNum`/`num` entries in `word/numbering.xml`) were missing from the output document.
+- `_NUMID_OFFSET = 10_000` sentinel added to `content_extractor.py` — every `<w:numId w:val="N"/>` in an extracted element is rewritten to `N + 10000` at extraction time via `_offset_numids(deep)`
+- New zip-level pass `_merge_numbering()` in `template_filler.py`: reads the data doc's `word/numbering.xml`, copies needed `abstractNum`/`num` definitions into the output doc, rewrites sentinels to real sequential IDs
+- Adds the `word/numbering.xml` relationship to the output doc if not already present
+
+### Table Column Remapping — `sections_remap_table_columns`
+
+- New config key `"sections_remap_table_columns"` in `prompts.json`
+- When set for a section, `_build_remapped_table()` rebuilds the table using the **template's** header row, `tblPr`, column widths (`tcPr`), and borders — but fills data rows from the data doc using only the listed column indices
+- Without this, "Record history" would paste the raw data-doc table (different column count and layout) instead of respecting the CDR template's table structure
+
+### Pre-Heading Content Insertion
+
+- `extract_pre_heading_content()` added to `content_extractor.py`
+- Extracts all body elements that appear **before the first heading** in the data doc (e.g. document-title metadata paragraphs)
+- Inserted immediately **before the first heading** in the template output (in original order)
+- Leading and trailing empty paragraphs are stripped from the pre-heading block
+
+### Inline `<w:sectPr>` Stripping — `_strip_inline_sectpr`
+
+- New helper `_strip_inline_sectpr()` in `template_filler.py`
+- Removes `<w:pPr><w:sectPr>` from every extracted element before insertion
+- Prevents data-doc header/footer rIds from polluting the output document (would break the output's header/footer display)
+- Called inside `_insert_xml_after()` so it applies automatically to every inserted element
+
+### New Post-Processing Passes
+
+| Pass | Function | What it does |
+|---|---|---|
+| 8 | `set_note_text_size` | Reduces font size of every paragraph starting with a NOTE prefix (e.g. `"NOTE"`, `"NOTE 1"`) to `note_text_size_half_pt` half-points (`18` = 9 pt). Sets `<w:sz>` and `<w:szCs>` on all runs. Applies to body paragraphs and table cells. |
+| 9 | `strip_superscript_list_markers` | Removes `<w:vertAlign val="superscript"/>` **only from leading** numeric runs (e.g. `"1"`, `"1."`, `"2."`). Preserves trailing footnote-reference superscripts at the end of a paragraph. |
+
+### Updated `remove_preamble_before_first_heading`
+
+- Now keeps the **first** and **last** page-break paragraphs before the first heading (previously only the last was kept)
+- Template layout: Cover → [break1] → instruction page → [break2] → TOC → [break3] → content. After removing the instruction page, both `break1` (Cover→TOC) and `break3` (TOC→content) must survive.
+
+### `threshold` moved to `prompts.json`
+
+- `"threshold": 0.6` is now a top-level key in `prompts.json`
+- `main.py` reads it at startup; CLI `--threshold` still overrides for one-off runs
+- Priority: CLI flag > `prompts.json`
+
+### New `prompts.json` keys
+
+| Key | Type | Purpose |
+|---|---|---|
+| `threshold` | `float` | Minimum cosine similarity; replaces the hardcoded default in `main.py` |
+| `sections_remap_table_columns` | `dict[str, list[int]]` | Column-remap sections: keeps template table structure, maps data columns |
+| `post_processing.note_text_prefixes` | `list[str]` | Paragraph prefixes that trigger font-size reduction (e.g. `"NOTE"`) |
+| `post_processing.note_text_size_half_pt` | `int` | Target half-point size for NOTE paragraphs (18 = 9 pt) |
+| `post_processing.strip_superscript_list_markers` | `bool` | Enable leading-superscript removal pass |
+
+---
+
 ## April 20, 2026
 
 ### Cleanup
@@ -114,9 +173,9 @@ Both documents are standard Office Open XML packages — zip archives containing
 main()
   │
   ├─ parse_args()  →  argparse.Namespace
-  │     flags: --template, --input, --output, --threshold (0.55), --product-name
+  │     flags: --template, --input, --output, --threshold (default: prompts.json["threshold"]), --product-name
   │
-  ├─ json.load("prompts.json")  →  product_name  (CLI --product-name overrides)
+  ├─ json.load("prompts.json")  →  product_name, threshold  (CLI flags override)
   │
   ├─ re.sub(r'_v\d+$', '', base)  →  auto-versioning loop  →  output_path
   │
@@ -131,13 +190,16 @@ main()
         │
         ├─ for each match (reverse paragraph_index order):
         │     extract_section(data_path, para_idx, level)  →  { "items": [...] }
-        │     _clear_section(heading_elem)   or   partial-clear (keep_n_tables)
-        │     _insert_xml_after(anchor, item["xml"])   ×N
+        │     _clear_section(heading_elem)   or   partial-clear (keep_n_tables / remap_cols)
+        │     _insert_xml_after(anchor, item["xml"])   ×N   [_strip_inline_sectpr applied]
         │
-        ├─ post_processor.apply_all(template_doc, product_name)   [11 passes]
+        ├─ extract_pre_heading_content(data_path)  →  pre items inserted before first heading
+        │
+        ├─ post_processor.apply_all(template_doc, product_name)   [13 passes]
         │
         ├─ template_doc.save(BytesIO)   →   bytes
-        └─ _copy_table_images(bytes, all_image_parts)   →   final bytes   →   file
+        ├─ _copy_table_images(bytes, all_image_parts)   →   bytes  (images resolved)
+        └─ _merge_numbering(bytes, data_path)   →   final bytes   →   file
 ```
 
 ---
@@ -311,9 +373,10 @@ for elem in body_children[start_pos + 1:]:
         # --- extract table ---
 ```
 
-**Raw XML extraction — deep copy + serialise:**
+**Raw XML extraction — deep copy + serialise + offset numIds:**
 ```python
 deep = copy.deepcopy(elem)          # lxml deep copy — isolates from live document
+_offset_numids(deep)                # add _NUMID_OFFSET to every <w:numId> (list/bullet fix)
 image_parts = _extract_and_remap_images(deep, doc)
 body_items.append({
     "type":        "paragraph" | "table",
@@ -322,7 +385,7 @@ body_items.append({
 })
 ```
 
-`etree.tostring()` preserves every namespace declaration, attribute, and nested child exactly — no information is lost through a Python object model.
+`_offset_numids()` adds `_NUMID_OFFSET = 10_000` to every `<w:numId w:val="N"/>` in the extracted element. This sentinel ensures the numId cannot collide with any existing definition in the template. `_merge_numbering()` in `template_filler.py` later reads these sentinels, locates the matching `abstractNum`/`num` entries in the data doc, copies them into the output doc with new sequential IDs, then rewrites the sentinels to the final IDs.
 
 **Image rId placeholder system:**
 
@@ -385,6 +448,15 @@ while body_items:
     ]
 }
 ```
+
+**`extract_pre_heading_content(doc_path)`:**
+
+New public function that extracts all `<w:p>` and `<w:tbl>` body elements appearing **before the first heading paragraph** in `doc_path`.
+
+- Returns the same `{"items": [...]}` structure as `extract_section()`
+- `_offset_numids` and `_extract_and_remap_images` are applied to every element
+- Leading and trailing empty paragraphs are stripped
+- Used in `fill_template()` to capture document-level metadata text (e.g. `"Philips Compliance Data Record  ISO 17664-2"`) that sits outside any section heading in the data doc
 
 ---
 
@@ -545,16 +617,18 @@ def apply_all(doc: Document, product_name: str | None = None) -> None:
 | # | Function | Key implementation detail |
 |---|---|---|
 | 1 | `fill_header_footer_placeholders` | Multi-run collapse: iterates every `<w:p>` in `doc.element.body` + all `doc.sections` header/footer parts. Concatenates run texts, finds the placeholder span by string index, collapses matching `<w:r>` nodes into one, deletes the rest. Handles Word splitting `<ProductName RX.Y>` across up to 4 separate `<w:r>` elements. |
-| 2 | `remove_preamble_before_first_heading` | Finds first `<w:p>` with a Heading style in `body`. Removes all preceding body children except `<w:tbl>` (cover page) and paragraphs containing `<w:br w:type="page"/>` or `<w:sectPr>`. |
+| 2 | `remove_preamble_before_first_heading` | Finds first `<w:p>` with a Heading style in `body`. Removes all preceding body children except `<w:tbl>` (cover page). Keeps the **first** and **last** page-break paragraphs (preserves Cover→TOC and TOC→content breaks); removes all intermediate page-break and visible-text paragraphs. |
 | 3 | `remove_styled_paragraphs` | Builds `{style_id: style_name}` from `doc.styles`. Removes `<w:p>` where `<w:pStyle w:val>` maps to a name in `_CFG["styles_to_remove"]` (e.g. `"Guidance"`). |
 | 4 | `remove_template_instructions` | State-machine scan over body `<w:p>` elements. Opens a block when `_para_text(e)` == `"<"` or starts with `"< "`. Closes when text == `">"` or starts with `"> "`. Both markers and all paragraphs between them are removed. |
 | 5 | `strip_inline_angle_brackets` | Removes any `<w:r>` whose sole `<w:t>` text is exactly `"<"` or `">"` from all body paragraphs. |
 | 6 | `remove_paragraphs_with_text` | Removes `<w:p>` where `_para_text(e)` contains any string from `_CFG["remove_paragraphs_with_text"]`. `_para_text` joins all `<w:t>` text nodes. |
 | 7 | `remove_empty_table_rows` | Iterates `doc.tables`. Skips the first row (header). Removes `<w:tr>` where every `<w:tc>` has empty text (joined `<w:t>` text == `""`). |
-| 8 | `set_all_text_black` | Iterates all `<w:r>` in body. Removes any `<w:rStyle>` pointing to `"GuidanceChar"`. Upserts `<w:color w:val="000000"/>` inside `<w:rPr>`, creating `<w:rPr>` if absent. |
-| 9 | `inject_definitions_fixed_rows` | Finds the definitions table by scanning `<w:p>` headings. For each `definitions_fixed_rows` entry: checks if first-column text already exists (case-insensitive). If missing: `deepcopy`s last row, replaces cell text nodes, appends to table. |
-| 10 | `sort_tables_alphabetically` | For each heading in `sort_table_alphabetically_under_headings`: finds the first `<w:tbl>` after that heading. Extracts all `<w:tr>` except header. Sorts by `_para_text` of first `<w:tc>`. Re-appends rows in sorted order. |
-| 11 | `remove_sections` | For each name in `_CFG["remove_sections"]`: finds the heading `<w:p>` by text match. Calls `_clear_section(heading_elem)` then removes the heading element itself. |
+| 8 | `set_note_text_size` | Iterates every `<w:p>` in `doc.element.body`. If the joined text starts with a prefix from `_CFG["note_text_prefixes"]` (e.g. `"NOTE"`, `"NOTE 1"`): removes existing `<w:sz>`/`<w:szCs>` from all `<w:rPr>` children and inserts new ones with `val = note_text_size_half_pt` (18 = 9 pt). |
+| 9 | `strip_superscript_list_markers` | Regex `r'^\d+[.\s]*$'` detects numeric list-marker runs. Removes `<w:vertAlign val="superscript"/>` only when the run is the first visible content in its paragraph (no preceding text). Trailing footnote-reference superscripts are preserved. |
+| 10 | `set_all_text_black` | Iterates all `<w:rPr>` in body. Removes any `<w:rStyle>` pointing to a character style whose name contains a `styles_to_remove` prefix (e.g. `GuidanceChar`). Removes existing `<w:color>`, then inserts `<w:color w:val="000000"/>` as first child. |
+| 11 | `inject_definitions_fixed_rows` | Finds the definitions table by scanning `<w:p>` headings. For each `definitions_fixed_rows` entry: checks if first-column text already exists (case-insensitive). If missing: `deepcopy`s last row, replaces cell text nodes (preserving run formatting), appends to table. |
+| 12 | `sort_tables_alphabetically` | For each heading in `sort_table_alphabetically_under_headings`: finds the first `<w:tbl>` after that heading. Extracts all `<w:tr>` except header. Sorts by `_para_text` of first `<w:tc>`. Re-appends rows in sorted order. |
+| 13 | `remove_sections` | For each name in `_CFG["remove_sections"]`: finds the heading `<w:p>` by text match. Removes heading + all following body elements up to the next heading (preserves inline `<w:sectPr>` paragraphs). |
 
 **Internal helpers used across passes:**
 ```python
@@ -643,8 +717,10 @@ main()
 | `model_name` | `str` | `SentenceTransformer` model identifier |
 | `query_prefix` | `str` | Prepended to template heading texts before `model.encode()` |
 | `product_name` | `str` | Passed as `product_name` arg to `fill_template()` and `apply_all()`; CLI `--product-name` overrides |
+| `threshold` | `float` | Minimum cosine similarity to accept a match; read at startup; CLI `--threshold` overrides |
 | `heading_mappings` | `dict[str, str]` | Forces `{ template_heading_text: data_heading_text }` matches at score 1.0 before AI scoring |
 | `sections_keep_first_n_tables` | `dict[str, int]` | For named sections: keep first N `<w:tbl>` after heading, delete rest |
+| `sections_remap_table_columns` | `dict[str, list[int]]` | For named sections: rebuild table using template structure (header row, column widths) filled with the listed data-doc column indices |
 | `sections_filter_heading_content` | `list[str]` | For named sections: skip extracted `<w:p>` elements whose `<w:pStyle>` is a heading style |
 | `post_processing.styles_to_remove` | `list[str]` | Style names → matched paragraphs removed from body |
 | `post_processing.remove_template_instructions` | `bool` | Enable `< ... >` state-machine block removal |
@@ -652,6 +728,9 @@ main()
 | `post_processing.remove_paragraphs_with_text` | `list[str]` | Substring match → paragraph removed |
 | `post_processing.remove_preamble_before_first_heading` | `bool` | Delete body children before first heading `<w:p>` (except `<w:tbl>` and page-break paragraphs) |
 | `post_processing.remove_empty_table_rows` | `bool` | Remove `<w:tr>` where all `<w:tc>` text is empty (skip row 0) |
+| `post_processing.note_text_prefixes` | `list[str]` | Paragraph prefixes that trigger font-size reduction (e.g. `"NOTE"`, `"NOTE 1"`) |
+| `post_processing.note_text_size_half_pt` | `int` | Target half-point size for NOTE paragraphs (18 = 9 pt) |
+| `post_processing.strip_superscript_list_markers` | `bool` | Remove `<w:vertAlign val="superscript"/>` from leading numeric runs only |
 | `post_processing.set_all_text_black` | `bool` | Upsert `<w:color w:val="000000"/>` in every `<w:rPr>`; remove `GuidanceChar` rStyle |
 | `post_processing.sort_table_alphabetically_under_headings` | `list[str]` | Heading names → first `<w:tbl>` after each heading sorted by first-column text |
 | `post_processing.definitions_fixed_rows` | `list[list[str, str]]` | `[[abbr, expansion], ...]` guaranteed rows in definitions table |
@@ -683,7 +762,7 @@ python main.py `
 | `--template` | `str` | required | Abs or relative path to template `.docx` |
 | `--input` | `str` | required | Abs or relative path to data `.docx` |
 | `--output` | `str` | `output/Filled_CDR.docx` | Output path; directory created with `os.makedirs(exist_ok=True)` |
-| `--threshold` | `float` | `0.55` | Minimum cosine similarity to accept a BGE match |
+| `--threshold` | `float` | `prompts.json["threshold"]` | Minimum cosine similarity to accept a BGE match; reads config if not passed |
 | `--product-name` | `str` | `prompts.json["product_name"]` | Overrides config for this run only |
 
 **Auto-versioning:**  `re.sub(r'_v\d+$', '', base)` strips any existing version suffix, then increments until a free filename is found — `Filled_CDR.docx` → `Filled_CDR_v2.docx` → …
