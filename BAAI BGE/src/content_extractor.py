@@ -43,6 +43,22 @@ def _build_heading_level_map(doc: Document) -> dict:
 # Prefix that is guaranteed never to appear in real Word rId values.
 _PLACEHOLDER_PREFIX = "rId_CDRCOPY_"
 
+# Large sentinel added to every <w:numId w:val="N"/> at extraction time so
+# the values cannot collide with numbering definitions already in the template.
+# _merge_numbering() in template_filler uses the same constant to locate and
+# remap them back to real sequential IDs at ZIP-merge time.
+_NUMID_OFFSET = 10_000
+
+
+def _offset_numids(elem) -> None:
+    """Add _NUMID_OFFSET to every <w:numId w:val="N"/> in *elem*."""
+    ns_w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    val_attr = f"{{{ns_w}}}val"
+    for numId_elem in elem.findall(f".//{{{ns_w}}}numId"):
+        val = numId_elem.get(val_attr)
+        if val and val.isdigit():
+            numId_elem.set(val_attr, str(int(val) + _NUMID_OFFSET))
+
 
 def _extract_and_remap_images(elem, doc: Document) -> list[dict]:
     """
@@ -145,11 +161,13 @@ def extract_section(
             if id(elem) in heading_level_map and heading_level_map[id(elem)] <= heading_level:
                 break
             deep = copy.deepcopy(elem)
+            _offset_numids(deep)
             image_parts = _extract_and_remap_images(deep, doc)
             body_items.append({"type": "paragraph", "xml": etree.tostring(deep), "image_parts": image_parts})
 
         elif elem.tag == qn("w:tbl"):
             deep = copy.deepcopy(elem)
+            _offset_numids(deep)
             image_parts = _extract_and_remap_images(deep, doc)
             body_items.append({"type": "table", "xml": etree.tostring(deep), "image_parts": image_parts})
 
@@ -159,12 +177,66 @@ def extract_section(
     while body_items:
         last = body_items[-1]
         if last["type"] == "paragraph":
-            p_elem = etree.fromstring(last["xml"])
+            # Re-parse from xml bytes only when checking; reuse the deepcopy
+            # already made above is not available here so a parse is needed —
+            # but do it only once per loop iteration, not twice.
+            p_elem      = etree.fromstring(last["xml"])
             has_text    = bool(''.join(t.text or '' for t in p_elem.iter(qn('w:t'))).strip())
-            has_drawing = bool(list(p_elem.iter(qn('w:drawing'))))
+            has_drawing = p_elem.find('.//' + qn('w:drawing')) is not None
             if not has_text and not has_drawing:
                 body_items.pop()
                 continue
         break
+
+    return {"items": body_items}
+
+
+def extract_pre_heading_content(doc_path: str) -> dict:
+    """
+    Extract every body element that appears **before the first heading**
+    in *doc_path*.
+
+    This captures document-level metadata text (e.g. "Philips Compliance
+    Data Record  ISO …") that is written as plain paragraphs or tables at
+    the very top of the file, before any section heading exists.
+
+    Returns the same ``{"items": [...]}`` structure as :func:`extract_section`.
+    """
+    doc = Document(doc_path)
+    heading_level_map = _build_heading_level_map(doc)
+    body_children = list(doc.element.body)
+
+    body_items: list[dict] = []
+
+    for elem in body_children:
+        # Stop as soon as we hit the first heading
+        if elem.tag == qn("w:p") and id(elem) in heading_level_map:
+            break
+
+        if elem.tag == qn("w:p"):
+            deep = copy.deepcopy(elem)
+            _offset_numids(deep)
+            image_parts = _extract_and_remap_images(deep, doc)
+            body_items.append({"type": "paragraph", "xml": etree.tostring(deep), "image_parts": image_parts})
+
+        elif elem.tag == qn("w:tbl"):
+            deep = copy.deepcopy(elem)
+            _offset_numids(deep)
+            image_parts = _extract_and_remap_images(deep, doc)
+            body_items.append({"type": "table", "xml": etree.tostring(deep), "image_parts": image_parts})
+
+    # Strip leading and trailing empty paragraphs
+    def _is_empty_para(item: dict) -> bool:
+        if item["type"] != "paragraph":
+            return False
+        p_elem = etree.fromstring(item["xml"])
+        has_text    = bool(''.join(t.text or '' for t in p_elem.iter(qn('w:t'))).strip())
+        has_drawing = p_elem.find('.//' + qn('w:drawing')) is not None
+        return not has_text and not has_drawing
+
+    while body_items and _is_empty_para(body_items[0]):
+        body_items.pop(0)
+    while body_items and _is_empty_para(body_items[-1]):
+        body_items.pop()
 
     return {"items": body_items}

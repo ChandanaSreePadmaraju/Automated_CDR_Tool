@@ -9,7 +9,8 @@ content after heading N never shifts the indices of headings above it.
 """
 
 import copy
-import io
+import json
+import os
 import re
 import zipfile
 from io import BytesIO
@@ -18,7 +19,7 @@ from docx import Document
 from docx.oxml.ns import qn
 from lxml import etree
 
-from src.content_extractor import extract_section
+from src.content_extractor import extract_section, extract_pre_heading_content, _NUMID_OFFSET
 from src import post_processor
 
 
@@ -42,14 +43,92 @@ def _strip_comments(elem) -> None:
                 parent.remove(node)
 
 
+def _strip_inline_sectpr(elem) -> None:
+    """
+    Remove every inline <w:sectPr> found inside a <w:pPr> in *elem*.
+
+    Paragraphs extracted from the data document carry their own
+    <w:pPr><w:sectPr> elements whose rId values reference the data doc's
+    header/footer files.  Those rIds are meaningless (or actively wrong) in
+    the output document context, so they must be stripped before insertion.
+    """
+    _ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    for pPr in elem.findall(f".//{{{_ns}}}pPr"):
+        for s in list(pPr.findall(f"{{{_ns}}}sectPr")):
+            pPr.remove(s)
+
+
+def _build_remapped_table(tmpl_tbl, data_tbl, col_indices: list, ns: str):
+    """
+    Return a new <w:tbl> element that:
+      - Keeps the template table's properties (tblPr) and header row exactly
+      - Populates data rows from *data_tbl* rows[1:], taking only the
+        columns listed in *col_indices*
+      - Applies the template's per-column cell properties (widths, borders)
+        so the output table looks like the template, not the data doc.
+    """
+    W = f"{{{ns}}}"
+
+    data_rows = data_tbl.findall(f"{W}tr")
+
+    # Deep-copy the whole template table (preserves tblPr, tblGrid, header)
+    result = copy.deepcopy(tmpl_tbl)
+    result_rows = result.findall(f"{W}tr")
+
+    # Remove everything after the first (header) row
+    for row in result_rows[1:]:
+        result.remove(row)
+
+    # Capture template cell properties (widths/borders) from the header row
+    tmpl_tcPr_list: list = []
+    if result_rows:
+        for tc in result_rows[0].findall(f"{W}tc"):
+            tcPr = tc.find(f"{W}tcPr")
+            tmpl_tcPr_list.append(copy.deepcopy(tcPr) if tcPr is not None else None)
+
+    # Build new data rows from data_tbl (skip its header row)
+    for data_row in data_rows[1:]:
+        data_cells = data_row.findall(f"{W}tc")
+        if not data_cells:
+            continue
+
+        new_row = copy.deepcopy(data_row)
+        # Remove all cells from the copied row
+        for tc in new_row.findall(f"{W}tc"):
+            new_row.remove(tc)
+
+        for i, col_idx in enumerate(col_indices):
+            if col_idx < len(data_cells):
+                new_tc = copy.deepcopy(data_cells[col_idx])
+                # Replace cell properties with template's to keep correct widths
+                if i < len(tmpl_tcPr_list) and tmpl_tcPr_list[i] is not None:
+                    existing = new_tc.find(f"{W}tcPr")
+                    if existing is not None:
+                        new_tc.remove(existing)
+                    new_tc.insert(0, copy.deepcopy(tmpl_tcPr_list[i]))
+            else:
+                # Column doesn't exist in data doc — add an empty cell
+                new_tc = etree.Element(f"{W}tc")
+                if i < len(tmpl_tcPr_list) and tmpl_tcPr_list[i] is not None:
+                    new_tc.append(copy.deepcopy(tmpl_tcPr_list[i]))
+                new_tc.append(etree.Element(f"{W}p"))
+            new_row.append(new_tc)
+
+        result.append(new_row)
+
+    return result
+
+
 def _insert_xml_after(ref_elem, xml_bytes: bytes):
     """
-    Deserialise *xml_bytes* into a fresh lxml element, strip comment markers,
-    then insert it immediately after *ref_elem*.  Works for any body child
-    (<w:p>, <w:tbl>, …).  Returns the newly inserted element.
+    Deserialise *xml_bytes* into a fresh lxml element, strip comment markers
+    and any inline sectPr elements, then insert it immediately after
+    *ref_elem*.  Works for any body child (<w:p>, <w:tbl>, …).
+    Returns the newly inserted element.
     """
     new_elem = copy.deepcopy(etree.fromstring(xml_bytes))
     _strip_comments(new_elem)
+    _strip_inline_sectpr(new_elem)
     ref_elem.addnext(new_elem)
     return new_elem
 
@@ -138,6 +217,143 @@ def _copy_table_images(output_bytes: bytes, all_image_parts: list[dict]) -> byte
     return out_buf.getvalue()
 
 
+def _merge_numbering(output_bytes: bytes, data_doc_path: str) -> bytes:
+    """
+    Zip-level pass: copy the abstractNum/num definitions that correspond to
+    the sentinel numId values (>= _NUMID_OFFSET) inserted during extraction
+    from the data doc's numbering.xml into the output doc's numbering.xml,
+    then rewrite the sentinel values to the new real IDs.
+
+    If the output doc has no sentinel numIds this is a no-op.
+    """
+    with zipfile.ZipFile(BytesIO(output_bytes), "r") as zin:
+        existing = {n: zin.read(n) for n in zin.namelist()}
+
+    doc_text = existing.get("word/document.xml", b"").decode("utf-8")
+
+    # Collect all sentinel numId values present in the output document
+    sentinel_ids = {
+        int(v) for v in re.findall(r'<w:numId w:val="(\d+)"', doc_text)
+        if int(v) >= _NUMID_OFFSET
+    }
+    if not sentinel_ids:
+        return output_bytes
+
+    # Map sentinel → original data-doc numId
+    orig_numids = {s: s - _NUMID_OFFSET for s in sentinel_ids}
+    needed_orig = set(orig_numids.values())
+
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    WNS = f"{{{W}}}"
+
+    # Read data doc's numbering.xml
+    try:
+        with zipfile.ZipFile(data_doc_path, "r") as zdata:
+            data_num_bytes = zdata.read("word/numbering.xml")
+    except (KeyError, Exception):
+        return output_bytes
+
+    data_root = etree.fromstring(data_num_bytes)
+
+    # Build: data numId → abstractNumId
+    num_to_abstract: dict[int, int] = {}
+    for num_elem in data_root.findall(f"{WNS}num"):
+        nid = int(num_elem.get(f"{WNS}numId", 0))
+        if nid in needed_orig:
+            ref = num_elem.find(f"{WNS}abstractNumId")
+            if ref is not None:
+                num_to_abstract[nid] = int(ref.get(f"{WNS}val", 0))
+
+    needed_abstract = set(num_to_abstract.values())
+
+    # Read / create output numbering.xml
+    out_num_bytes = existing.get("word/numbering.xml")
+    if out_num_bytes:
+        out_root = etree.fromstring(out_num_bytes)
+    else:
+        out_root = etree.fromstring(
+            b'<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>'
+        )
+
+    # Max existing IDs in output
+    max_abstract = max(
+        (int(e.get(f"{WNS}abstractNumId", 0)) for e in out_root.findall(f"{WNS}abstractNum")),
+        default=0,
+    )
+    max_num = max(
+        (int(e.get(f"{WNS}numId", 0)) for e in out_root.findall(f"{WNS}num")),
+        default=0,
+    )
+
+    # Copy abstractNum entries (must come before <w:num> in the XML)
+    abstract_id_map: dict[int, int] = {}  # old → new
+    for ab_elem in data_root.findall(f"{WNS}abstractNum"):
+        old_id = int(ab_elem.get(f"{WNS}abstractNumId", 0))
+        if old_id not in needed_abstract:
+            continue
+        max_abstract += 1
+        abstract_id_map[old_id] = max_abstract
+        new_ab = copy.deepcopy(ab_elem)
+        new_ab.set(f"{WNS}abstractNumId", str(max_abstract))
+        # Remove numStyleLink — it references a style name that may not exist
+        for lnk in new_ab.findall(f"{WNS}numStyleLink"):
+            new_ab.remove(lnk)
+        # Insert before the first <w:num> element so ordering is correct
+        first_num = out_root.find(f"{WNS}num")
+        if first_num is not None:
+            first_num.addprevious(new_ab)
+        else:
+            out_root.append(new_ab)
+
+    # Add <w:num> entries
+    numid_map: dict[int, int] = {}  # orig data numId → new output numId
+    for orig_nid, orig_abstract in num_to_abstract.items():
+        new_abstract = abstract_id_map.get(orig_abstract)
+        if new_abstract is None:
+            continue
+        max_num += 1
+        numid_map[orig_nid] = max_num
+        num_elem = etree.SubElement(out_root, f"{WNS}num")
+        num_elem.set(f"{WNS}numId", str(max_num))
+        ab_ref = etree.SubElement(num_elem, f"{WNS}abstractNumId")
+        ab_ref.set(f"{WNS}val", str(new_abstract))
+
+    # Rewrite sentinel numIds in document.xml
+    for orig_nid, new_nid in numid_map.items():
+        sentinel = orig_nid + _NUMID_OFFSET
+        doc_text = doc_text.replace(
+            f'<w:numId w:val="{sentinel}"',
+            f'<w:numId w:val="{new_nid}"',
+        )
+
+    # Persist numbering.xml — ensure relationship exists
+    existing["word/numbering.xml"] = etree.tostring(
+        out_root, xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+    existing["word/document.xml"] = doc_text.encode("utf-8")
+
+    # Add numbering relationship if not present
+    rels_text = existing.get("word/_rels/document.xml.rels", b"").decode("utf-8")
+    _NUM_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"
+    if _NUM_REL not in rels_text:
+        existing_nums = [int(x) for x in re.findall(r'Id="rId(\d+)"', rels_text)]
+        new_rid = f"rId{max(existing_nums, default=0) + 1}"
+        insert_at = rels_text.rfind("</")
+        rels_text = (
+            rels_text[:insert_at]
+            + f'  <Relationship Id="{new_rid}" Type="{_NUM_REL}" Target="numbering.xml"/>\n'
+            + rels_text[insert_at:]
+        )
+        existing["word/_rels/document.xml.rels"] = rels_text.encode("utf-8")
+
+    out_buf = BytesIO()
+    with zipfile.ZipFile(out_buf, "w", zipfile.ZIP_DEFLATED) as zout:
+        for name, data in existing.items():
+            zout.writestr(name, data)
+
+    return out_buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -165,18 +381,16 @@ def fill_template(
     # Collects image parts from all inserted tables for zip-level copying later
     all_image_parts: list[dict] = []
 
-    # Only process matched headings; reverse by template paragraph index so
-    # content insertions don't shift paragraph indices of later headings.
-    import json, os as _os
-    _prompts_file = _os.path.join(_os.path.dirname(__file__), "..", "prompts.json")
+    _prompts_file = os.path.join(os.path.dirname(__file__), "..", "prompts.json")
     with open(_prompts_file, "r", encoding="utf-8") as _pf:
         _prompts_cfg = json.load(_pf)
-    _skip_headings = {h.lower() for h in _prompts_cfg.get("skip_template_headings", [])}
-    # keep_first_n: for these headings, keep the first N template tables and
-    # only clear what follows them (rather than clearing the whole section).
     _keep_n: dict[str, int] = {
         k.lower(): v
         for k, v in _prompts_cfg.get("sections_keep_first_n_tables", {}).items()
+    }
+    _remap_cols: dict[str, list] = {
+        k.lower(): v
+        for k, v in _prompts_cfg.get("sections_remap_table_columns", {}).items()
     }
     # filter_headings: for these sections, skip any extracted item that is a
     # heading paragraph (avoids sub-headings like "Test Administration" appearing
@@ -188,7 +402,6 @@ def fill_template(
     valid_matches = [
         m for m in matches
         if m["matched_heading"] is not None
-        and m["template_heading"]["text"].lower() not in _skip_headings
     ]
     valid_matches.sort(
         key=lambda m: m["template_heading"]["paragraph_index"],
@@ -245,10 +458,10 @@ def fill_template(
             if _is_heading_elem(elem):
                 break
             to_remove.append(elem)
-        # Keep trailing layout paragraphs (page breaks / sectPr) in place so
-        # the section boundary spacing survives after content replacement.
-        while to_remove and _is_layout_para(to_remove[-1]):
-            to_remove.pop()
+        # Preserve ALL layout paragraphs (page-break paras and inline sectPr
+        # paras).  The inline sectPr ones carry the template's header/footer
+        # rId references; deleting them would break the page header/footer.
+        to_remove = [e for e in to_remove if not _is_layout_para(e)]
         for elem in to_remove:
             body.remove(elem)
 
@@ -270,7 +483,43 @@ def fill_template(
         anchor = template.paragraphs[tmpl_h["paragraph_index"]]._p
         tmpl_h_lower = tmpl_h["text"].lower()
 
-        if tmpl_h_lower in _keep_n:
+        if tmpl_h_lower in _remap_cols:
+            # Column-remap: keep the template's table structure (header row +
+            # column widths) and fill it with mapped rows from the data doc.
+            col_indices = _remap_cols[tmpl_h_lower]
+
+            # Save a deep copy of the template's first table BEFORE clearing
+            saved_tmpl_tbl = None
+            body_pre = list(anchor.getparent())
+            anchor_idx = body_pre.index(anchor)
+            for elem in body_pre[anchor_idx + 1:]:
+                if _is_heading_elem(elem):
+                    break
+                if elem.tag == f"{{{ns}}}tbl":
+                    saved_tmpl_tbl = copy.deepcopy(elem)
+                    break
+
+            # Clear template placeholder content
+            _clear_section(anchor)
+
+            # Find first table in extracted data content
+            data_tbl_xml = None
+            for item in content["items"]:
+                if item["type"] == "table":
+                    data_tbl_xml = item["xml"]
+                    all_image_parts.extend(item.get("image_parts", []))
+                    break
+
+            if saved_tmpl_tbl is not None and data_tbl_xml is not None:
+                data_tbl_elem = etree.fromstring(data_tbl_xml)
+                _strip_comments(data_tbl_elem)
+                _strip_inline_sectpr(data_tbl_elem)
+                merged = _build_remapped_table(saved_tmpl_tbl, data_tbl_elem, col_indices, ns)
+                anchor = _insert_xml_after(anchor, etree.tostring(merged, encoding="unicode").encode())
+
+            continue  # section fully handled — skip normal insert
+
+        elif tmpl_h_lower in _keep_n:
             # Partial clear: keep first N tables after the heading, remove the rest.
             n = _keep_n[tmpl_h_lower]
             body = anchor.getparent()
@@ -282,6 +531,12 @@ def fill_template(
             for elem in body_children[start + 1:]:
                 if _is_heading_elem(elem):
                     break
+                # Preserve layout paragraphs (page breaks / inline sectPr) —
+                # never delete them.  Do NOT update after_kept for them so
+                # the anchor always points to the last *kept table*, not a
+                # layout paragraph inserted after it.
+                if _is_layout_para(elem):
+                    continue
                 if elem.tag == f"{{{ns}}}tbl":
                     tables_seen += 1
                     if tables_seen <= n:
@@ -300,10 +555,8 @@ def fill_template(
         filter_hdgs = tmpl_h_lower in _filter_heading_sections
 
         for item in content["items"]:
-            # Optionally skip heading paragraphs from sub-sections
             if filter_hdgs and item["type"] == "paragraph":
-                from lxml import etree as _etree
-                p_elem = _etree.fromstring(item["xml"])
+                p_elem = etree.fromstring(item["xml"])
                 pPr = p_elem.find(f"{{{ns}}}pPr")
                 if pPr is not None:
                     pStyle = pPr.find(f"{{{ns}}}pStyle")
@@ -312,13 +565,42 @@ def fill_template(
             anchor = _insert_xml_after(anchor, item["xml"])
             all_image_parts.extend(item.get("image_parts", []))
 
+    # ── Pre-heading content (text before the first heading in the data doc) ─
+    # E.g. "Philips Compliance Data Record  ISO …" lines that sit at the very
+    # top of the source file, outside any section.
+    pre = extract_pre_heading_content(data_doc_path)
+    if pre["items"]:
+        # Find the first heading element in the template body and insert
+        # all pre-heading items immediately before it.
+        tmpl_body = template.element.body
+        first_heading_elem = None
+        for elem in list(tmpl_body):
+            if _is_heading_elem(elem):
+                first_heading_elem = elem
+                break
+        if first_heading_elem is not None:
+            # Insert in reverse order so the final sequence is preserved
+            for item in reversed(pre["items"]):
+                new_elem = copy.deepcopy(etree.fromstring(item["xml"]))
+                _strip_comments(new_elem)
+                _strip_inline_sectpr(new_elem)
+                first_heading_elem.addprevious(new_elem)
+                all_image_parts.extend(item.get("image_parts", []))
+        else:
+            # No headings at all — append at end of body
+            ref = list(tmpl_body)[-1]
+            for item in pre["items"]:
+                ref = _insert_xml_after(ref, item["xml"])
+                all_image_parts.extend(item.get("image_parts", []))
+
     # ── Post-processing ────────────────────────────────────────────────────
     post_processor.apply_all(template, product_name)
 
     # ── Save: first to bytes so we can do zip-level image patching ─────────
-    buf = io.BytesIO()
+    buf = BytesIO()
     template.save(buf)
     final_bytes = _copy_table_images(buf.getvalue(), all_image_parts)
+    final_bytes = _merge_numbering(final_bytes, data_doc_path)
 
     with open(output_path, "wb") as fh:
         fh.write(final_bytes)

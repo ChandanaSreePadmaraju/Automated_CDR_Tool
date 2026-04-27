@@ -8,9 +8,12 @@ nothing is hardcoded in this module.
 
 import json
 import os
+import re
+from copy import deepcopy
 
 from docx import Document
 from docx.oxml.ns import qn
+from lxml import etree
 
 _PROMPTS_FILE = os.path.join(os.path.dirname(__file__), "..", "prompts.json")
 with open(_PROMPTS_FILE, "r", encoding="utf-8") as _f:
@@ -144,13 +147,22 @@ def set_all_text_black(doc: Document) -> None:
     if not _CFG.get("set_all_text_black", False):
         return
 
-    # Build set of rStyle ids that are Guidance character styles
+    # Build set of rStyle ids whose style name contains any of the
+    # styles_to_remove names — these are character-style variants
+    # (e.g. "GuidanceChar") that must also be stripped so they cannot
+    # override the forced black colour.  Driven by prompts.json so no
+    # style names are hardcoded here.
+    char_style_prefixes: list[str] = [
+        s.lower() for s in _CFG.get("styles_to_remove", [])
+    ]
     guidance_rStyle_ids: set[str] = set()
     for s in doc.styles:
-        if s.name and "guidance" in s.name.lower() and s.type.name == "CHARACTER":
+        if (
+            s.name
+            and s.type.name == "CHARACTER"
+            and any(prefix in s.name.lower() for prefix in char_style_prefixes)
+        ):
             guidance_rStyle_ids.add(s.style_id)
-
-    from lxml import etree as _etree
 
     for rPr in doc.element.body.iter(f"{{{_NS}}}rPr"):
         # 1. Remove GuidanceChar rStyle
@@ -164,7 +176,7 @@ def set_all_text_black(doc: Document) -> None:
             rPr.remove(color)
 
         # 3. Insert explicit black color as first child so it takes effect
-        black = _etree.Element(f"{{{_NS}}}color")
+        black = etree.Element(f"{{{_NS}}}color")
         black.set(f"{{{_NS}}}val", "000000")
         rPr.insert(0, black)
 
@@ -225,7 +237,96 @@ def _sort_table(tbl_elem) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 6 — Remove specified sections (heading + content)
+# Pass 6 — Reduce font size for NOTE paragraphs
+# ---------------------------------------------------------------------------
+
+def set_note_text_size(doc: Document) -> None:
+    """Reduce the font size of every paragraph whose text starts with a
+    configured NOTE prefix (e.g. "NOTE", "NOTE 1", "NOTE 2").
+
+    Applies to both body paragraphs and paragraphs inside table cells.
+    Prefixes and target size are read from prompts.json:
+      note_text_prefixes   : list[str]  – e.g. ["NOTE"]
+      note_text_size_half_pt: int       – half-points (18 = 9 pt)
+    """
+    prefixes  = [p.lower() for p in _CFG.get("note_text_prefixes", [])]
+    size_val  = str(_CFG.get("note_text_size_half_pt", 18))
+    if not prefixes:
+        return
+
+    W = f"{{{_NS}}}"
+
+    for p_elem in doc.element.body.iter(f"{W}p"):
+        p_text = "".join(t.text or "" for t in p_elem.iter(f"{W}t")).strip()
+        if not any(p_text.lower().startswith(prefix) for prefix in prefixes):
+            continue
+
+        for r in p_elem.findall(f".//{W}r"):
+            rPr = r.find(f"{W}rPr")
+            if rPr is None:
+                rPr = etree.Element(f"{W}rPr")
+                r.insert(0, rPr)
+            # Remove any existing sz / szCs
+            for tag in (f"{W}sz", f"{W}szCs"):
+                for old in rPr.findall(tag):
+                    rPr.remove(old)
+            # Insert new sz and szCs
+            sz = etree.SubElement(rPr, f"{W}sz")
+            sz.set(f"{W}val", size_val)
+            szCs = etree.SubElement(rPr, f"{W}szCs")
+            szCs.set(f"{W}val", size_val)
+
+
+# ---------------------------------------------------------------------------
+# Pass 7 — Strip superscript formatting from list-marker runs
+# ---------------------------------------------------------------------------
+
+_MARKER_RE = re.compile(r'^\d+[.\s]*$')
+
+
+def strip_superscript_list_markers(doc: Document) -> None:
+    """Remove <w:vertAlign val="superscript"/> only from LEADING numeric runs.
+
+    A run is considered a leading list marker if:
+      - Its text matches the bare-number pattern (e.g. "1", "1.", "2."), AND
+      - All runs that appear before it in the same paragraph have no visible
+        text (i.e. the superscript is the very first visible content).
+
+    This preserves legitimate trailing footnote-reference superscripts (e.g.
+    a small "1" appended after "Instructions for Use Azurion R3.0") while
+    removing numbered-list counters that Word copied as superscripts.
+
+    Controlled by prompts.json: "strip_superscript_list_markers": true
+    """
+    if not _CFG.get("strip_superscript_list_markers", False):
+        return
+
+    W = f"{{{_NS}}}"
+    for p_elem in doc.element.body.iter(f"{W}p"):
+        runs = p_elem.findall(f".//{W}r")
+        for idx, r in enumerate(runs):
+            rPr = r.find(f"{W}rPr")
+            if rPr is None:
+                continue
+            vert = rPr.find(f"{W}vertAlign")
+            if vert is None or vert.get(f"{W}val") != "superscript":
+                continue
+            t = r.find(f"{W}t")
+            text = (t.text or "").strip() if t is not None else ""
+            if not _MARKER_RE.match(text):
+                continue
+            # Only strip if no visible text exists in any earlier run
+            preceding_text = "".join(
+                (rt.text or "")
+                for prev_r in runs[:idx]
+                for rt in prev_r.findall(f"{W}t")
+            ).strip()
+            if not preceding_text:
+                rPr.remove(vert)
+
+
+# ---------------------------------------------------------------------------
+# Pass 8 — Remove specified sections (heading + content)
 # ---------------------------------------------------------------------------
 
 def remove_sections(doc: Document) -> None:
@@ -251,6 +352,12 @@ def remove_sections(doc: Document) -> None:
                     for nxt in children[i + 1:]:
                         if nxt.tag == f"{{{ns}}}p" and _para_style_id(nxt) in h_ids:
                             break
+                        # Never delete layout paragraphs (inline sectPr) —
+                        # they carry the template's header/footer rId links.
+                        if nxt.tag == f"{{{ns}}}p":
+                            pPr = nxt.find(f"{{{ns}}}pPr")
+                            if pPr is not None and pPr.find(f"{{{ns}}}sectPr") is not None:
+                                continue
                         to_remove.append(nxt)
                     for e in to_remove:
                         body.remove(e)
@@ -258,7 +365,7 @@ def remove_sections(doc: Document) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 7 — Fill placeholders throughout document
+# Pass 9 — Fill placeholders throughout document
 # ---------------------------------------------------------------------------
 
 def fill_header_footer_placeholders(doc: Document, product_name: str | None) -> None:
@@ -308,8 +415,7 @@ def fill_header_footer_placeholders(doc: Document, product_name: str | None) -> 
                     for wt in wt_list[1:]:
                         wt.getparent().remove(wt)
                 else:
-                    from lxml import etree as _etree
-                    wt = _etree.SubElement(run_elems[first_ri], qn('w:t'))
+                    wt = etree.SubElement(run_elems[first_ri], qn('w:t'))
                     wt.text = new_text
                 # Clear text in remaining involved runs
                 for ri in range(first_ri + 1, last_ri + 1):
@@ -445,8 +551,8 @@ def inject_definitions_fixed_rows(doc: Document) -> None:
     CFG["definitions_heading"] names the heading to look under.
     """
     fixed: list[list[str]] = _CFG.get("definitions_fixed_rows", [])
-    heading_text: str       = _CFG.get("definitions_heading", "Definitions & abbreviations")
-    if not fixed:
+    heading_text: str       = _CFG.get("definitions_heading", "")
+    if not fixed or not heading_text:
         return
 
     h_ids = _heading_style_ids(doc)
@@ -485,9 +591,6 @@ def inject_definitions_fixed_rows(doc: Document) -> None:
     # Use the last data row as a style template for new rows
     template_row = rows[-1]
 
-    from copy import deepcopy
-    from lxml import etree
-
     for abbrev, definition in fixed:
         if abbrev.lower() in existing_keys:
             continue  # already present
@@ -497,65 +600,33 @@ def inject_definitions_fixed_rows(doc: Document) -> None:
         cells   = new_row.findall(f"{{{_NS}}}tc")
         texts   = [abbrev, definition]
         for ci, cell in enumerate(cells[:len(texts)]):
-            # Clear existing runs and set plain text
-            for r in cell.findall(f".//{{{_NS}}}r"):
+            # Capture run properties (font/size/bold) from the first run
+            # before clearing, so the new run inherits the same formatting.
+            existing_runs = cell.findall(f".//{{{_NS}}}r")
+            saved_rPr = None
+            for r in existing_runs:
+                rPr = r.find(f"{{{_NS}}}rPr")
+                if rPr is not None:
+                    saved_rPr = deepcopy(rPr)
+                    break
+
+            # Clear existing runs
+            for r in existing_runs:
                 parent = r.getparent()
                 if parent is not None:
                     parent.remove(r)
-            # Re-add a simple run with the text
+
+            # Re-add a run with the same rPr so font matches the table
             for p_elem in cell.findall(f"{{{_NS}}}p"):
                 r_elem = etree.SubElement(p_elem, f"{{{_NS}}}r")
+                if saved_rPr is not None:
+                    r_elem.insert(0, saved_rPr)
                 t_elem = etree.SubElement(r_elem, f"{{{_NS}}}t")
                 t_elem.text = texts[ci]
                 t_elem.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
                 break
 
         tbl_elem.append(new_row)
-
-
-def add_page_break_before_headings(doc: Document) -> None:
-    """
-    Add w:pageBreakBefore to every paragraph whose style matches an entry in
-    CFG["page_break_before_headings"] (list of heading style names, e.g. ["Heading 1"]).
-    The first heading in the document is skipped — the page before it is already
-    produced by the cover-page page-break paragraph.
-    """
-    targets: list[str] = _CFG.get("page_break_before_headings", [])
-    if not targets:
-        return
-
-    targets_lower = {t.strip().lower() for t in targets}
-    # Build style-id → style-name map
-    id_to_name: dict[str, str] = {
-        s.style_id: s.name for s in doc.styles if s.name
-    }
-
-    from lxml import etree as _etree
-
-    body = doc.element.body
-    first_skipped = False
-    for elem in body:
-        if elem.tag != f"{{{_NS}}}p":
-            continue
-        style_id = _para_style_id(elem)
-        style_name = id_to_name.get(style_id, "")
-        if style_name.lower() not in targets_lower:
-            continue
-        if not first_skipped:
-            first_skipped = True
-            continue  # skip the very first matching heading (cover already breaks before it)
-
-        pPr = elem.find(f"{{{_NS}}}pPr")
-        if pPr is None:
-            pPr = _etree.SubElement(elem, f"{{{_NS}}}pPr")
-            elem.insert(0, pPr)
-        # Only add if not already present
-        if pPr.find(f"{{{_NS}}}pageBreakBefore") is None:
-            pb = _etree.SubElement(pPr, f"{{{_NS}}}pageBreakBefore")
-            # insert after pStyle if present
-            ps = pPr.find(f"{{{_NS}}}pStyle")
-            if ps is not None:
-                ps.addnext(pb)
 
 
 def apply_all(doc: Document, product_name: str | None = None) -> None:
@@ -567,9 +638,9 @@ def apply_all(doc: Document, product_name: str | None = None) -> None:
     strip_inline_angle_brackets(doc)
     remove_paragraphs_with_text(doc)
     remove_empty_table_rows(doc)
+    set_note_text_size(doc)
+    strip_superscript_list_markers(doc)
     set_all_text_black(doc)
     inject_definitions_fixed_rows(doc)
     sort_tables_alphabetically(doc)
     remove_sections(doc)
-    # Note: add_page_break_before_headings is available but not called by default
-    # because the template has no page breaks between content sections.

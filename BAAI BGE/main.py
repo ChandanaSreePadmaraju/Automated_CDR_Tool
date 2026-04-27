@@ -14,16 +14,15 @@ Usage
 """
 
 import argparse
+import json
 import os
+import re
 
 from src.heading_extractor import extract_headings
 from src.heading_matcher   import load_model, match_headings
 from src.template_filler   import fill_template
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Minimum cosine-similarity score to accept a heading match (0.0 – 1.0)
-DEFAULT_THRESHOLD = 0.55
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,12 +42,12 @@ def parse_args() -> argparse.Namespace:
         help="Path for the filled output .docx (default: output/Filled_CDR.docx)",
     )
     parser.add_argument(
-        "--threshold", type=float, default=DEFAULT_THRESHOLD,
-        help=f"Minimum match score 0.0–1.0 (default: {DEFAULT_THRESHOLD})",
+        "--threshold", type=float, default=None,
+        help="Minimum match score 0.0–1.0 (default: read from prompts.json 'threshold')",
     )
     parser.add_argument(
         "--product-name", default=None, dest="product_name",
-        help="Product name to substitute header/footer placeholders defined in prompts.json",
+        help="Product name override (default: read from prompts.json 'product_name')",
     )
     return parser.parse_args()
 
@@ -58,6 +57,13 @@ def main() -> None:
 
     template_path = os.path.abspath(args.template)
     data_path     = os.path.abspath(args.input)
+
+    # Load product_name from prompts.json; CLI arg overrides if provided
+    _prompts_path = os.path.join(BASE_DIR, "prompts.json")
+    with open(_prompts_path, "r", encoding="utf-8") as _pf:
+        _prompts = json.load(_pf)
+    product_name = args.product_name or _prompts.get("product_name")
+    threshold    = args.threshold if args.threshold is not None else float(_prompts.get("threshold", 0.6))
 
     if args.output:
         output_path = os.path.abspath(args.output)
@@ -71,9 +77,7 @@ def main() -> None:
     # Auto-version: if the file already exists, append _v2, _v3, … until free
     if os.path.isfile(output_path):
         base, ext = os.path.splitext(output_path)
-        # Strip any existing _vN suffix so we always count from the base name
-        import re as _re
-        base = _re.sub(r'_v\d+$', '', base)
+        base = re.sub(r'_v\d+$', '', base)
         version = 2
         while os.path.isfile(f"{base}_v{version}{ext}"):
             version += 1
@@ -106,7 +110,7 @@ def main() -> None:
 
     # ── Step 2: Semantic heading matching ──────────────────────────────────
     print("\n" + "=" * 60)
-    print("STEP 2 — Loading BAAI/bge-base-en-v1.5 & matching headings")
+    print(f"STEP 2 — Loading {_prompts.get('model_name', 'BAAI/bge-base-en-v1.5')} & matching headings")
     print("=" * 60)
 
     model   = load_model()
@@ -114,7 +118,7 @@ def main() -> None:
         template_headings,
         data_headings,
         model,
-        threshold=args.threshold,
+        threshold=threshold,
     )
 
     matched_count = sum(1 for m in matches if m["matched_heading"] is not None)
@@ -140,7 +144,7 @@ def main() -> None:
     print("STEP 3 — Filling template")
     print("=" * 60)
 
-    fill_template(template_path, data_path, matches, output_path, product_name=args.product_name)
+    fill_template(template_path, data_path, matches, output_path, product_name=product_name)
 
     print("\nDone.")
 

@@ -33,7 +33,7 @@ def match_headings(
     template_headings: list[dict],
     data_headings: list[dict],
     model: SentenceTransformer,
-    threshold: float = 0.40,
+    threshold: float,
 ) -> list[dict]:
     """
     For every template heading find the closest heading in the data doc.
@@ -50,7 +50,7 @@ def match_headings(
     template_headings : list[dict]  – output of heading_extractor.extract_headings() on template
     data_headings     : list[dict]  – output of heading_extractor.extract_headings() on data doc
     model             : SentenceTransformer – loaded BGE model
-    threshold         : float – minimum score to accept a match (default 0.40)
+    threshold         : float – minimum score to accept a match (supplied by caller; see DEFAULT_THRESHOLD in main.py)
     """
     if not template_headings or not data_headings:
         return [
