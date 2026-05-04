@@ -11,7 +11,8 @@
 
     "sections_remap_table_columns": {
         "Record history": [0, 1, 2, 3],
-        "References": [0, 2, 1]
+        "References": [0, 2, 1],
+        "Definitions & abbreviations": [0, 1]
     },
 
     "sections_keep_first_n_tables": {"Compliance Checklist": 1},
@@ -45,10 +46,36 @@
         ],
         "definitions_heading": "Definitions & abbreviations",
         "remove_sections": [
-            "Pre-created CDR history"
+            "Pre-created CDR history",
+            "Test Administration"
         ],
+        "remove_headings_only": [
+            "Test Measurements",
+            "Test Result"
+        ],
+        "compliance_table_header": {
+            "heading": "Compliance Checklist",
+            "columns": [
+                "ISO 17664-2 / Cl.",
+                "Requirement \u2013 Test",
+                "Result \u2013 Reference \u2013 Remark",
+                "Verdict"
+            ]
+        },
         "header_footer_placeholders": [
             "<ProductName RX.Y>"
-        ]
+        ],
+        "normalize_rfonts_remove_attributes": ["eastAsia", "eastAsiaTheme", "cs"],
+        "fill_table_from_source": {
+            "target_heading": "Compliance Checklist",
+            "source_heading": "Test Administration",
+            "row_label_map": {
+                "Model/Type reference:": "Sample Type (Identification of Design)",
+                "Ratings:":             "Ratings",
+                "Copy of marking plate:": "Copy of marking plate:",
+                "General product information:": "General product information:",
+                "The product fulfils the requirements of ISO 17664-2:": "The product fulfils the requirements of ISO 17664-2:"
+            }
+        }
     }
 }

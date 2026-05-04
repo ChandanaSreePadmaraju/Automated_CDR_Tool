@@ -16,7 +16,6 @@ import zipfile
 from io import BytesIO
 
 from docx import Document
-from docx.oxml.ns import qn
 from lxml import etree
 
 from src.content_extractor import extract_section, extract_pre_heading_content, _NUMID_OFFSET
@@ -26,22 +25,6 @@ from src import post_processor
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-_COMMENT_TAGS = {
-    qn("w:commentRangeStart"),
-    qn("w:commentRangeEnd"),
-    qn("w:commentReference"),
-}
-
-
-def _strip_comments(elem) -> None:
-    """Remove all comment-related elements from *elem* in-place."""
-    for tag in _COMMENT_TAGS:
-        for node in elem.findall(f".//{tag}"):
-            parent = node.getparent()
-            if parent is not None:
-                parent.remove(node)
-
 
 def _strip_inline_sectpr(elem) -> None:
     """
@@ -121,13 +104,14 @@ def _build_remapped_table(tmpl_tbl, data_tbl, col_indices: list, ns: str):
 
 def _insert_xml_after(ref_elem, xml_bytes: bytes):
     """
-    Deserialise *xml_bytes* into a fresh lxml element, strip comment markers
-    and any inline sectPr elements, then insert it immediately after
-    *ref_elem*.  Works for any body child (<w:p>, <w:tbl>, …).
+    Deserialise *xml_bytes* into a fresh lxml element, strip any inline sectPr
+    elements, then insert it immediately after *ref_elem*.
+    Comment markup (commentRangeStart/End/Reference) is preserved so Word
+    comments from the data doc appear in the output.
+    Works for any body child (<w:p>, <w:tbl>, …).
     Returns the newly inserted element.
     """
     new_elem = copy.deepcopy(etree.fromstring(xml_bytes))
-    _strip_comments(new_elem)
     _strip_inline_sectpr(new_elem)
     ref_elem.addnext(new_elem)
     return new_elem
@@ -212,6 +196,165 @@ def _copy_table_images(output_bytes: bytes, all_image_parts: list[dict]) -> byte
         zout.writestr("word/_rels/document.xml.rels", rels_text.encode("utf-8"))
         zout.writestr("word/document.xml",            doc_text.encode("utf-8"))
         for name, data in new_media.items():
+            zout.writestr(name, data)
+
+    return out_buf.getvalue()
+
+
+_COMMENTS_REL  = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
+_COMMENTS_CT   = "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
+_COMMENTSEXT_REL = "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
+_COMMENTSEXT_CT  = "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"
+_COMMENTSIDS_REL = "http://schemas.microsoft.com/office/2016/09/relationships/commentsIds"
+_COMMENTSIDS_CT  = "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsIds+xml"
+_COMMENTSEXTENSIBLE_REL = "http://schemas.microsoft.com/office/2018/08/relationships/commentsExtensible"
+_COMMENTSEXTENSIBLE_CT  = "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtensible+xml"
+
+
+def _merge_comments(output_bytes: bytes, data_doc_path: str) -> bytes:
+    """
+    Zip-level pass: copy word/comments.xml (and related extended comment files)
+    from the data doc into the output docx.
+
+    If the output already has a comments part, the data-doc comments are merged
+    in by appending their <w:comment> elements so both sets are preserved.
+    Related parts (commentsExtended, commentsIds, commentsExtensible) are
+    copied wholesale if not already present.
+    """
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+    # Files to carry over if present in the data doc (rel type, content type, zip name)
+    _EXTRA_PARTS = [
+        ("word/commentsExtended.xml",    _COMMENTSEXT_REL,         _COMMENTSEXT_CT),
+        ("word/commentsIds.xml",         _COMMENTSIDS_REL,         _COMMENTSIDS_CT),
+        ("word/commentsExtensible.xml",  _COMMENTSEXTENSIBLE_REL,  _COMMENTSEXTENSIBLE_CT),
+    ]
+
+    try:
+        with zipfile.ZipFile(data_doc_path, "r") as zdata:
+            data_names = zdata.namelist()
+            if "word/comments.xml" not in data_names:
+                return output_bytes
+            src_comments_bytes = zdata.read("word/comments.xml")
+            extra_bytes = {
+                name: zdata.read(name)
+                for name, _, _ in _EXTRA_PARTS
+                if name in data_names
+            }
+    except Exception:
+        return output_bytes
+
+    with zipfile.ZipFile(BytesIO(output_bytes), "r") as zin:
+        existing = {n: zin.read(n) for n in zin.namelist()}
+
+    # ── Merge main comments.xml ────────────────────────────────────────────
+    if "word/comments.xml" in existing:
+        # Merge: append data-doc <w:comment> elements into the output's root
+        try:
+            out_root  = etree.fromstring(existing["word/comments.xml"])
+            src_root  = etree.fromstring(src_comments_bytes)
+            for child in src_root:
+                if child.tag == f"{{{W}}}comment":
+                    out_root.append(copy.deepcopy(child))
+            existing["word/comments.xml"] = etree.tostring(
+                out_root, xml_declaration=True, encoding="UTF-8", standalone=True
+            )
+        except Exception:
+            pass  # leave existing unchanged if parsing fails
+    else:
+        # Output has no comments part — add it and wire up relationship + content type
+        existing["word/comments.xml"] = src_comments_bytes
+        rels_text = existing.get("word/_rels/document.xml.rels", b"").decode("utf-8")
+        if _COMMENTS_REL not in rels_text:
+            existing_nums = [int(x) for x in re.findall(r'Id="rId(\d+)"', rels_text)]
+            new_rid = f"rId{max(existing_nums, default=0) + 1}"
+            insert_at = rels_text.rfind("</")
+            rels_text = (
+                rels_text[:insert_at]
+                + f'  <Relationship Id="{new_rid}" Type="{_COMMENTS_REL}" Target="comments.xml"/>\n'
+                + rels_text[insert_at:]
+            )
+            existing["word/_rels/document.xml.rels"] = rels_text.encode("utf-8")
+        ct_text = existing.get("[Content_Types].xml", b"").decode("utf-8")
+        if "comments.xml" not in ct_text:
+            insert_at = ct_text.rfind("</")
+            ct_text = (
+                ct_text[:insert_at]
+                + f'  <Override PartName="/word/comments.xml" ContentType="{_COMMENTS_CT}"/>\n'
+                + ct_text[insert_at:]
+            )
+            existing["[Content_Types].xml"] = ct_text.encode("utf-8")
+
+    # ── Drop extended comment parts entirely ──────────────────────────────
+    # python-docx strips w14:paraId from every paragraph on save, so any
+    # commentsIds / commentsExtended / commentsExtensible entries (which map
+    # comment IDs to those paraIds) become dangling references.  Word's modern
+    # comment renderer then fails to resolve the author identity and shows
+    # blank names.  Removing these files forces Word to use its classic
+    # comment display, which reads author names directly from comments.xml and
+    # always shows them correctly.
+    rels_text    = existing.get("word/_rels/document.xml.rels", b"").decode("utf-8")
+    ct_text      = existing.get("[Content_Types].xml",           b"").decode("utf-8")
+    changed_rels = False
+    changed_ct   = False
+
+    for zip_name, rel_type, ct_type in _EXTRA_PARTS:
+        base = zip_name.split("/")[-1]
+        if zip_name in existing:
+            del existing[zip_name]
+        # Remove relationship entry
+        if rel_type in rels_text:
+            rels_text = re.sub(
+                r'\s*<Relationship[^>]*Type="' + re.escape(rel_type) + r'"[^>]*/>\s*',
+                "\n",
+                rels_text,
+            )
+            changed_rels = True
+        # Remove content-type entry
+        if base in ct_text:
+            ct_text = re.sub(
+                r'\s*<Override[^>]*PartName="/word/' + re.escape(base) + r'"[^>]*/>\s*',
+                "\n",
+                ct_text,
+            )
+            changed_ct = True
+
+    if changed_rels:
+        existing["word/_rels/document.xml.rels"] = rels_text.encode("utf-8")
+    if changed_ct:
+        existing["[Content_Types].xml"] = ct_text.encode("utf-8")
+
+    # ── Remove people.xml ─────────────────────────────────────────────────
+    # people.xml carries Azure AD (providerId="AD") identity entries.  When
+    # present, Word tries to resolve commenters' identities against the
+    # originating AD tenant.  If the reader is in a different tenant the
+    # resolution fails and Word displays blank author names even though the
+    # correct name is already stored in the w:author attribute of comments.xml.
+    # Removing people.xml forces Word to fall back to the classic comment
+    # display which reads w:author directly — always showing the right name.
+    _PEOPLE_REL = "http://schemas.microsoft.com/office/2011/relationships/people"
+    if "word/people.xml" in existing:
+        del existing["word/people.xml"]
+    rels_text = existing.get("word/_rels/document.xml.rels", b"").decode("utf-8")
+    ct_text   = existing.get("[Content_Types].xml",           b"").decode("utf-8")
+    if _PEOPLE_REL in rels_text:
+        rels_text = re.sub(
+            r'\s*<Relationship[^>]*Type="' + re.escape(_PEOPLE_REL) + r'"[^>]*/>' ,
+            "",
+            rels_text,
+        )
+        existing["word/_rels/document.xml.rels"] = rels_text.encode("utf-8")
+    if "people.xml" in ct_text:
+        ct_text = re.sub(
+            r'\s*<Override[^>]*PartName="/word/people\.xml"[^>]*/>' ,
+            "",
+            ct_text,
+        )
+        existing["[Content_Types].xml"] = ct_text.encode("utf-8")
+
+    out_buf = BytesIO()
+    with zipfile.ZipFile(out_buf, "w", zipfile.ZIP_DEFLATED) as zout:
+        for name, data in existing.items():
             zout.writestr(name, data)
 
     return out_buf.getvalue()
@@ -519,7 +662,6 @@ def fill_template(
 
             if saved_tmpl_tbl is not None and data_tbl_xml is not None:
                 data_tbl_elem = etree.fromstring(data_tbl_xml)
-                _strip_comments(data_tbl_elem)
                 _strip_inline_sectpr(data_tbl_elem)
                 merged = _build_remapped_table(saved_tmpl_tbl, data_tbl_elem, col_indices, ns)
                 anchor = _insert_xml_after(anchor, etree.tostring(merged, encoding="unicode").encode())
@@ -589,7 +731,6 @@ def fill_template(
             # Insert in reverse order so the final sequence is preserved
             for item in reversed(pre["items"]):
                 new_elem = copy.deepcopy(etree.fromstring(item["xml"]))
-                _strip_comments(new_elem)
                 _strip_inline_sectpr(new_elem)
                 first_heading_elem.addprevious(new_elem)
                 all_image_parts.extend(item.get("image_parts", []))
@@ -601,12 +742,14 @@ def fill_template(
                 all_image_parts.extend(item.get("image_parts", []))
 
     # ── Post-processing ────────────────────────────────────────────────────
-    post_processor.apply_all(template, product_name)
+    extra_image_parts = post_processor.apply_all(template, product_name, data_doc_path=data_doc_path, template_path=template_path)
+    all_image_parts.extend(extra_image_parts)
 
     # ── Save: first to bytes so we can do zip-level image patching ─────────
     buf = BytesIO()
     template.save(buf)
     final_bytes = _copy_table_images(buf.getvalue(), all_image_parts)
+    final_bytes = _merge_comments(final_bytes, data_doc_path)
     final_bytes = _merge_numbering(final_bytes, data_doc_path)
 
     with open(output_path, "wb") as fh:
