@@ -2,6 +2,48 @@
 
 ---
 
+## May 5, 2026 (Session 2)
+
+### Multi-file Upload Support (`app.py`)
+
+- **1 template + N input files** — `accept_multiple_files=True`; no file-count cap (removed `[:5]` limit)
+- **Per-file expanders** — each input gets its own collapsible result panel with metrics + colour-coded match table
+- **Individual download button** per output file (`op_<input_name>.docx`)
+- **"Download All as ZIP"** button appears when ≥ 2 outputs succeed — bundles all via `zipfile.ZipFile`
+- **Progress bar** shows `Processing 2/5: InputX.docx …` step-by-step across all inputs
+
+### Auto Product-Name Detection (`app.py` + `main.py`)
+
+- `product_name` is now **auto-detected** from each input document's Word core properties: tries `title` → `subject` → `description` in order
+- If none found, falls back to `product_name` in `prompts.json` (key now optional / can be absent)
+- **UI**: detected product name displayed as a caption inside each per-file expander
+- **CLI**: detection runs on the `--input` path; `--product-name` flag still allows manual override
+- Removed `auto_detect_product_name()` from `import io` dependency in `main.py` (uses `docx.Document` directly from a file path)
+
+### Removed Hardcoded `product_name` from `prompts.json`
+
+- `"product_name": "Azurion HW R3"` line deleted from `prompts.json`
+- Config is now fully product-agnostic; the key is simply absent
+
+### Threshold Slider in Sidebar (`app.py`)
+
+- Live **match threshold slider** (0.0 – 1.0, step 0.05) in the left sidebar
+- Default pre-filled from `prompts.json` `threshold` value at startup
+- Adjustable before each Run — no restart needed
+- Colour key shown in sidebar: 🟢 ≥ 0.85 · 🔵 ≥ 0.70 · 🔴 < 0.70
+
+### `.gitignore` Updated
+
+- Added `BAAI BGE/Input*.docx`, `BAAI BGE/Template*.docx`, `BAAI BGE/Review*.docx` exclusions
+- Prevents binary sample/test data files from being tracked in git
+
+### Code Cleanup (`main.py`)
+
+- Removed unused `import re` and `import io`
+- `auto_detect_product_name()` added as a standalone function before `main()`
+
+---
+
 ## May 5, 2026
 
 ### Streamlit UI — Full Rework (`app.py`)

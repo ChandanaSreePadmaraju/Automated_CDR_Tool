@@ -73,7 +73,19 @@
 
 ### Configuration (`prompts.json`)
 
-All pipeline behaviour is config-driven — no hardcoded document-specific values in code. Key config keys: `model_name`, `threshold`, `query_prefix`, `product_name`, `heading_mappings`, `sections_remap_table_columns`, `sections_keep_first_n_tables`, `sections_filter_heading_content`, and the full `post_processing` block (15 flags/lists).
+All pipeline behaviour is config-driven — no hardcoded document-specific values in code. Key config keys: `model_name`, `threshold`, `query_prefix`, `heading_mappings`, `sections_remap_table_columns`, `sections_keep_first_n_tables`, `sections_filter_heading_content`, and the full `post_processing` block (15 flags/lists).
+
+> `product_name` is **no longer a config key** — it is auto-detected at runtime from each input document's Word core properties (title → subject → description). No hardcoded value needed in `prompts.json`.
+
+### Streamlit UI (`app.py`)
+
+- Run with `streamlit run "BAAI BGE/app.py"`
+- Upload **1 CDR template** + **any number of test-record inputs**
+- Pipeline runs per-input: heading extraction → BGE matching → template fill
+- Per-file collapsible result panels with metrics + colour-coded match table (🟢 ≥ 0.85 · 🔵 ≥ 0.70 · 🔴 < 0.70)
+- Individual download button per output; **ZIP download** when multiple outputs succeed
+- **Threshold slider** in sidebar (default from `prompts.json`, live override before each run)
+- **Product name** auto-detected from input doc's Word core properties; shown per-file in results
 
 
 
