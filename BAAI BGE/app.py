@@ -311,7 +311,7 @@ st.markdown('<div class="step-badge">STEP 3 — Run</div>', unsafe_allow_html=Tr
 run_btn = st.button(
     "▶  Run Pipeline",
     disabled=not inputs_ready,
-    use_container_width=True,
+    width="stretch",
     type="primary",
 )
 
@@ -409,7 +409,7 @@ if st.session_state.results:
             df = pd.DataFrame(rows)
             st.dataframe(
                 df.style.map(colour_score, subset=["Score"]),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -421,7 +421,7 @@ if st.session_state.results:
                     "application/vnd.openxmlformats-officedocument"
                     ".wordprocessingml.document"
                 ),
-                use_container_width=True,
+                width="stretch",
                 key=f"dl_{r['input_name']}",
             )
 
@@ -438,5 +438,5 @@ if st.session_state.results:
             data=make_zip(results),
             file_name="CDR_outputs.zip",
             mime="application/zip",
-            use_container_width=True,
+            width="stretch",
         )
