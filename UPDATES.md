@@ -86,6 +86,7 @@ All pipeline behaviour is config-driven — no hardcoded document-specific value
 - Individual download button per output; **ZIP download** when multiple outputs succeed
 - **Threshold slider** in sidebar (default from `prompts.json`, live override before each run)
 - **Product name** auto-detected from input doc's Word core properties; shown per-file in results
+- **Input document limit:** No hard cap on the number of input files — upload as many as needed. The only ceiling is Streamlit's default **200 MB total upload size** (across all files at once). Typical `.docx` files are 1–5 MB, so that allows **40–200 files per run**. To raise the limit, pass `--server.maxUploadSize 500` (or higher) to the `streamlit run` command. Processing is sequential and CPU-bound; large batches will take proportionally longer.
 
 
 
