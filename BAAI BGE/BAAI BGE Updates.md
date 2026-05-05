@@ -2,6 +2,74 @@
 
 ---
 
+## May 5, 2026
+
+### Streamlit UI — Full Rework (`app.py`)
+
+- **Wide layout** — `layout="wide"` so the full browser width is used
+- **Colourful theme** — deep purple/blue gradient background, gradient title text, step badges, colour-coded score cells (green ≥ 0.85, blue ≥ 0.70, red < 0.70)
+- **Session state** — results stored in `st.session_state`; cleared on every new Run click so stale results can never be downloaded
+- **Error propagation** — `run_pipeline` returns a descriptive error string; shown to user on failure
+- **Output filename** — always `op_<exact input filename>` — no product-name stripping, no `op1_`/`_v2` counter
+- **Processed-file banner** — info box confirms which template + input were actually used after each run
+- **`pandas` added** to `requirements.txt` (used for the colour-coded match table in the UI)
+- **`applymap` → `map`** fix for pandas ≥ 2.1 compatibility
+- **Output filename fix** — removed hardcoded `product_name` lookup from `derive_output_name`; filename is now fully automatic from the uploaded input file
+
+### Auto-increment `op` index (`main.py`)
+
+- When the output file already exists, the `op` prefix index is incremented (`op1_` → `op2_` → …) instead of appending `_v2`/`_v3`
+- Old `_v2` suffix logic removed entirely
+
+### `remove_blank_paragraph_before_headings` (Pass 11a, `post_processor.py`)
+
+- New pass added before Pass 11b (`remove_blank_paragraph_after_headings`)
+- Removes all consecutive blank paragraphs immediately **before** any heading
+- Controlled by `"remove_blank_para_before_headings": true` in `prompts.json`
+- Fixes unnecessary page gap between "Definitions & abbreviations" and "Compliance Checklist"
+
+### Installed Package Versions (venv)
+
+| Package | Version |
+|---|---|
+| python-docx | 1.2.0 |
+| torch | 2.11.0 |
+| sentence-transformers | 5.4.1 |
+| scikit-learn | 1.8.0 |
+| numpy | 2.4.4 |
+| lxml | 6.1.0 |
+| streamlit | 1.57.0 |
+| pandas | 3.0.2 |
+
+---
+
+## May 4, 2026
+
+### Streamlit Web UI (`app.py`)
+
+- New `app.py` added — run with `streamlit run app.py`
+- Two file-upload widgets: **Template (.docx)** and **Input / Test Record (.docx)**
+- Full pipeline runs in-browser: heading extraction → BGE matching → template fill
+- Live log panel shows step-by-step progress and the heading match table
+- Download button produces `op_<input_stem>.docx` (product-name suffix stripped, no `op1_`/`op2_` counter — clean single output per run)
+- Model loaded once and cached across runs via `@st.cache_resource`
+- `streamlit>=1.35.0` added to `requirements.txt`
+
+### `remove_blank_paragraph_before_headings` (Pass 11a)
+
+- New post-processing pass added to `post_processor.py` before Pass 11b (`remove_blank_paragraph_after_headings`)
+- Removes all consecutive blank paragraphs that appear immediately **before** any heading
+
+- Eliminates the unwanted page gap that appeared between "Definitions & abbreviations" and "Compliance Checklist"
+- Controlled by `"remove_blank_para_before_headings": true` in `prompts.json` (enabled by default)
+
+### Output Filename: op-index increment replaces `_v2` suffix
+
+- `main.py` auto-increment logic changed: when `op1_<name>.docx` already exists, the next run produces `op2_<name>.docx`, then `op3_`, etc.
+- The old `_v2` / `_v3` versioning suffix is removed
+
+---
+
 ## April 27, 2026
 
 ### Force-Black Text Extended to Headers / Footers

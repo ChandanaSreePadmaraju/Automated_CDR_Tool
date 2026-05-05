@@ -11,6 +11,11 @@ env/
 # Generated output
 output/
 
+# Sample input/template/review .docx files (not part of source code)
+BAAI BGE/Input*.docx
+BAAI BGE/Template*.docx
+BAAI BGE/Review*.docx
+
 # Word temporary lock files
 ~$*
 

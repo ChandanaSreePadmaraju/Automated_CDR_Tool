@@ -7,6 +7,30 @@ to the best-fitting heading in the data document.
 
 import json
 import os
+import ssl
+
+# ---------------------------------------------------------------------------
+# Corporate-proxy SSL bypass
+# Must happen BEFORE sentence_transformers / huggingface_hub are imported.
+# ---------------------------------------------------------------------------
+os.environ["HF_HUB_DISABLE_SSL_VERIFICATION"] = "1"
+ssl._create_default_https_context = ssl._create_unverified_context
+
+import httpx as _httpx
+
+_orig_client = _httpx.Client.__init__
+def _patched_client(self, *args, **kwargs):
+    kwargs["verify"] = False
+    _orig_client(self, *args, **kwargs)
+_httpx.Client.__init__ = _patched_client
+
+_orig_async = _httpx.AsyncClient.__init__
+def _patched_async(self, *args, **kwargs):
+    kwargs["verify"] = False
+    _orig_async(self, *args, **kwargs)
+_httpx.AsyncClient.__init__ = _patched_async
+# ---------------------------------------------------------------------------
+
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity

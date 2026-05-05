@@ -32,13 +32,35 @@ Usage
 import argparse
 import json
 import os
-import re
 
 from src.heading_extractor import extract_headings
 from src.heading_matcher   import load_model, match_headings
 from src.template_filler   import fill_template
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+# ---------------------------------------------------------------------------
+# Auto-detect product name from a .docx's Word core properties
+# ---------------------------------------------------------------------------
+
+def auto_detect_product_name(doc_path: str) -> str | None:
+    """Read product name from the document's Word core properties.
+
+    Tries title → subject → description in order; returns None if all empty.
+    This avoids any hardcoded product name in config files.
+    """
+    try:
+        from docx import Document
+        doc = Document(doc_path)
+        cp  = doc.core_properties
+        for attr in ("title", "subject", "description"):
+            val = (getattr(cp, attr, None) or "").strip()
+            if val:
+                return val
+    except Exception:
+        pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +160,11 @@ def main() -> None:
     _prompts_path = os.path.join(BASE_DIR, "prompts.json")
     with open(_prompts_path, "r", encoding="utf-8") as _pf:
         _prompts = json.load(_pf)
-    product_name = args.product_name or _prompts.get("product_name")
+    product_name = args.product_name or auto_detect_product_name(data_path)
+    if product_name:
+        print(f"  Product name      : {product_name} (auto-detected)")
+    else:
+        print("  Product name      : not detected — header/footer placeholders will not be replaced")
     threshold    = args.threshold if args.threshold is not None else float(_prompts.get("threshold", 0.6))
 
     # ── Output directory ───────────────────────────────────────────────────
@@ -181,14 +207,12 @@ def main() -> None:
         else:
             output_path = build_output_path(output_dir, idx, base)
 
-        # Auto-version: if the file already exists, append _v2, _v3, …
+        # Auto-increment op index: if op1_ exists, try op2_, op3_, …
         if os.path.isfile(output_path):
-            stem, ext = os.path.splitext(output_path)
-            stem = re.sub(r'_v\d+$', '', stem)
-            version = 2
-            while os.path.isfile(f"{stem}_v{version}{ext}"):
-                version += 1
-            output_path = f"{stem}_v{version}{ext}"
+            next_op = idx + 1
+            while os.path.isfile(build_output_path(output_dir, next_op, base)):
+                next_op += 1
+            output_path = build_output_path(output_dir, next_op, base)
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 

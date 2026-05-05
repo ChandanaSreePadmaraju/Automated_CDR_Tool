@@ -470,7 +470,53 @@ def remove_headings_only(doc: Document) -> None:
                     break
 
 
-# Pass 11
+# Pass 11a — Remove blank paragraphs immediately BEFORE any heading
+def remove_blank_paragraph_before_headings(doc: Document) -> None:
+    """Remove ALL consecutive empty paragraphs that appear immediately before a Heading.
+
+    Keeps layout paragraphs (page-breaks / inline sectPr) and paragraphs
+    with images intact.
+    """
+    if not _CFG.get("remove_blank_para_before_headings", False):
+        return
+
+    def _is_blank(elem) -> bool:
+        if elem.tag != f"{{{_NS}}}p":
+            return False
+        pPr = elem.find(f"{{{_NS}}}pPr")
+        if pPr is not None and pPr.find(f"{{{_NS}}}sectPr") is not None:
+            return False  # layout paragraph — keep
+        for br in elem.iter(f"{{{_NS}}}br"):
+            if br.get(f"{{{_NS}}}type") == "page":
+                return False  # page-break — keep
+        text = ''.join(t.text or '' for t in elem.iter(f"{{{_NS}}}t")).strip()
+        has_drawing = any(n.tag == qn('w:drawing') for n in elem.iter())
+        return not text and not has_drawing
+
+    h_ids = _heading_style_ids(doc)
+    body_elem = doc.element.body
+
+    changed = True
+    while changed:
+        changed = False
+        children = list(body_elem)
+        for i, elem in enumerate(children):
+            if elem.tag != f"{{{_NS}}}p":
+                continue
+            if _para_style_id(elem) not in h_ids:
+                continue
+            # Remove all consecutive blank paragraphs directly before this heading
+            j = i - 1
+            while j >= 0 and _is_blank(children[j]):
+                try:
+                    body_elem.remove(children[j])
+                    changed = True
+                except Exception:
+                    pass
+                j -= 1
+
+
+# Pass 11b
 def remove_blank_paragraph_after_headings(doc: Document) -> None:
     """Remove ALL consecutive empty paragraphs that immediately follow a Heading.
 
@@ -1459,6 +1505,7 @@ def apply_all(doc: Document, product_name: str | None = None, data_doc_path: str
     remove_headings_only(doc)
     prepend_compliance_table_header(doc, template_path)   # before set_all_text_black so header gets same colour pass
     set_all_text_black(doc)
+    remove_blank_paragraph_before_headings(doc)
     remove_blank_paragraph_after_headings(doc)
     inject_definitions_fixed_rows(doc)
     sort_tables_alphabetically(doc)
