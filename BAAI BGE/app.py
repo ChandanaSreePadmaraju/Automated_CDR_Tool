@@ -128,21 +128,24 @@ def _load_prompts() -> dict:
         return json.load(fh)
 
 
-def auto_detect_product_name(docx_bytes: bytes) -> str | None:
-    """Read product name from the input document's Word core properties.
+def auto_detect_product_name(docx_bytes: bytes, filename: str = "") -> str | None:
+    """Detect product name from the filename.
 
-    Tries title -> subject -> description in order; returns None if all empty.
+    Extracts text after '(YYYY) ' at end of stem.
+      e.g. 'D001352871 Test Record ISO 17664-2 (2021) Azurion HW R3.docx'
+           → 'Azurion HW R3'
+    Returns None if no such pattern found — placeholder stays unreplaced
+    rather than using the document type name from core properties.
     """
-    try:
-        from docx import Document as _Doc
-        doc = _Doc(io.BytesIO(docx_bytes))
-        cp = doc.core_properties
-        for attr in ("title", "subject", "description"):
-            val = (getattr(cp, attr, None) or "").strip()
-            if val:
-                return val
-    except Exception:
-        pass
+    import re as _re
+    if filename:
+        stem = os.path.splitext(os.path.basename(filename))[0]
+        m = _re.search(r'\(\d{4}\)\s+(.+)$', stem)
+        if m:
+            name = m.group(1).strip()
+            # Strip trailing copy/revision suffixes like " (3)", " (2)" etc.
+            name = _re.sub(r'\s*\(\d+\)\s*$', '', name).strip()
+            return name or None
     return None
 
 
@@ -162,7 +165,7 @@ def run_pipeline(
 
     # Auto-detect product name from the input doc's Word properties;
     # fall back to prompts.json value only if doc has none set.
-    product_name = auto_detect_product_name(input_bytes)
+    product_name = auto_detect_product_name(input_bytes, input_name)
     if not product_name:
         product_name = prompts.get("product_name") or None
 

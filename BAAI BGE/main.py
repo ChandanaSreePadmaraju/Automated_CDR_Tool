@@ -55,21 +55,14 @@ def auto_detect_product_name(doc_path: str) -> str | None:
               → 'Azurion HW R3'
     """
     import re
-    try:
-        from docx import Document
-        doc = Document(doc_path)
-        cp  = doc.core_properties
-        for attr in ("title", "subject", "description"):
-            val = (getattr(cp, attr, None) or "").strip()
-            if val:
-                return val
-    except Exception:
-        pass
-    # Filename fallback: extract product name after '(YEAR) ' pattern
+    # Filename: extract product name after '(YEAR) ' pattern
     stem = os.path.splitext(os.path.basename(doc_path))[0]
     m = re.search(r'\((\d{4})\)\s+(.+)$', stem)
     if m:
-        return m.group(2).strip()
+        name = m.group(2).strip()
+        # Strip trailing copy/revision suffixes like " (3)", " (2)" etc.
+        name = re.sub(r'\s*\(\d+\)\s*$', '', name).strip()
+        return name or None
     return None
 
 

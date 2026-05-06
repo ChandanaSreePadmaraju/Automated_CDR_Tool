@@ -28,6 +28,13 @@
 - Removed redundant `from copy import deepcopy` inside `fill_table_from_source` — `deepcopy` already imported at module level.
 - Deleted leftover debug scripts `chk.py` and `inspect_tables.py`.
 
+### Product Name Auto-Detection Fix (`app.py`, `main.py`)
+
+- **Filename-first strategy**: product name is now extracted from the filename before checking Word core properties. Pattern: text after `(YYYY)` in the stem (e.g. `...(2021) Azurion HW R3.docx` → `Azurion HW R3`). Core properties (title/subject/description) used as fallback only — prevents "Test Record" (the doc title) from overriding the actual product name.
+- **Strip trailing copy suffixes**: trailing `(N)` suffixes (e.g. `Azurion HW R3 (3)`) are now stripped so Windows file-copy numbering doesn't pollute the product name.
+- **Removed core properties fallback entirely**: files without `(YYYY) <product>` in filename (e.g. `Input10_...DIN 6868-157 R3 rev B.docx`) return `None` — placeholder `<ProductName RX.Y>` stays unreplaced rather than incorrectly using the document type name ("Test Record", "Test Protocol Record" etc.) from core properties.
+- Fix applied consistently in both `app.py` (`auto_detect_product_name`) and `main.py`.
+
 ---
 
 ## May 5, 2026 (Session 2)
