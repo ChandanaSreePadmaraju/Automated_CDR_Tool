@@ -1231,12 +1231,21 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
             _doc_body2.insert(_prev_tbl_idx + 1, _spacer)
 
     # ------------------------------------------------------------------
-    # Also add the ISO spanning banner to any OTHER tables in the same
-    # compliance heading section (e.g. the test-admin table that precedes
-    # the checklist), so every page in that section shows the same grey
-    # banner at the top via tblHeader repeat.
+    # Clone the exact same tblHeader rows into every OTHER table in the
+    # compliance heading section (e.g. the test-admin table before the
+    # checklist), so all pages show an identical repeating header.
+    # We deep-copy the tblHeader rows already inserted in out_tbl and
+    # prepend them verbatim into sibling tables — Word renders tblHeader
+    # rows independently of the table's own column grid, so the same
+    # ISO banner + CI./Requirement header appears on every page.
     # ------------------------------------------------------------------
-    if spanning_text:
+    _src_hdr_rows = [
+        r for r in out_tbl.findall(f"{W}tr")
+        if r.find(f"{W}trPr") is not None
+        and r.find(f"{W}trPr").find(f"{W}tblHeader") is not None
+    ]
+    if _src_hdr_rows:
+        import copy
         for _i2, _e2 in enumerate(body_children):
             if _e2.tag == f"{W}p" and _para_style_id(_e2) in h_ids:
                 if _para_text(_e2).strip().lower() == heading_text.lower():
@@ -1252,21 +1261,11 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
                             if (_ftrPr is not None
                                     and _ftrPr.find(f"{W}tblHeader") is not None):
                                 continue
-                            # Total width from tblGrid
-                            _gc = _nxt2.findall(f"{W}tblGrid/{W}gridCol")
-                            _nc = len(_gc) if _gc else 2
-                            _tw = (
-                                sum(int(gc.get(f"{W}w", "0")) for gc in _gc)
-                                if _gc else total_w
-                            )
-                            _span2 = _make_hdr_row(
-                                _make_hdr_cell(
-                                    str(_tw), "dxa", spanning_text,
-                                    center=True, gridspan=_nc,
-                                ),
-                                row_height_twips=span_height,
-                            )
-                            _nxt2.insert(list(_nxt2).index(_other_rows[0]), _span2)
+                            _ins_idx2 = list(_nxt2).index(_other_rows[0])
+                            for _src_row in _src_hdr_rows:
+                                _cloned = copy.deepcopy(_src_row)
+                                _nxt2.insert(_ins_idx2, _cloned)
+                                _ins_idx2 += 1
                     break
 
 
