@@ -1042,13 +1042,12 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     # e.g. "4", "5").  In the template these rows have a blank Verdict;
     # the data doc sometimes fills them with "P" which is incorrect.
     # ------------------------------------------------------------------
-    import re as _re
     for _dr in out_rows:
         _dr_cells = _dr.findall(f"{W}tc")
         if not _dr_cells:
             continue
         _ci_txt = "".join(t.text or "" for t in _dr_cells[0].iter(f"{W}t")).strip()
-        if _re.fullmatch(r'\d+', _ci_txt):
+        if re.fullmatch(r'\d+', _ci_txt):
             # Section header row — wipe all runs from the last (Verdict) cell
             for _p in _dr_cells[-1].findall(f"{W}p"):
                 for _run in _p.findall(f"{W}r"):
@@ -1325,8 +1324,6 @@ def fill_table_from_source(doc: Document, data_doc_path: str | None, template_pa
                        For 1-column target rows the entire cell content is replaced
                        with the XML from the source cell (full cell clone).
     """
-    from copy import deepcopy
-
     cfg: dict = _CFG.get("fill_table_from_source", {})
     if not cfg or not data_doc_path:
         return []
