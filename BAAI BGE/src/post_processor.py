@@ -2,7 +2,7 @@
 post_processor.py
 -----------------
 Post-processing passes applied to the filled output document before saving.
-All behaviour is driven by the "post_processing" block in prompts.json —
+All behaviour is driven by the "post_processing" block in prompts.json ΓÇö
 nothing is hardcoded in this module.
 """
 
@@ -47,7 +47,7 @@ def _heading_style_ids(doc: Document) -> set:
 
 
 # ---------------------------------------------------------------------------
-# Pass 3 — Remove paragraphs with specific styles (e.g. "Guidance")
+# Pass 3 ΓÇö Remove paragraphs with specific styles (e.g. "Guidance")
 # ---------------------------------------------------------------------------
 
 def remove_styled_paragraphs(doc: Document) -> None:
@@ -67,7 +67,7 @@ def remove_styled_paragraphs(doc: Document) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 4 — Remove template instruction bracket markers  (< / >)
+# Pass 4 ΓÇö Remove template instruction bracket markers  (< / >)
 # ---------------------------------------------------------------------------
 
 def remove_template_instructions(doc: Document) -> None:
@@ -110,7 +110,7 @@ def remove_template_instructions(doc: Document) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 7 — Remove empty table rows
+# Pass 7 ΓÇö Remove empty table rows
 # ---------------------------------------------------------------------------
 
 def remove_empty_table_rows(doc: Document) -> None:
@@ -133,7 +133,7 @@ def remove_empty_table_rows(doc: Document) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 10 — Set all text colour to black
+# Pass 10 ΓÇö Set all text colour to black
 # ---------------------------------------------------------------------------
 
 def set_all_text_black(doc: Document) -> None:
@@ -150,7 +150,7 @@ def set_all_text_black(doc: Document) -> None:
         return
 
     # Build set of rStyle ids whose style name contains any of the
-    # styles_to_remove names — these are character-style variants
+    # styles_to_remove names ΓÇö these are character-style variants
     # (e.g. "GuidanceChar") that must also be stripped so they cannot
     # override the forced black colour.  Driven by prompts.json so no
     # style names are hardcoded here.
@@ -167,7 +167,7 @@ def set_all_text_black(doc: Document) -> None:
             guidance_rStyle_ids.add(s.style_id)
 
     for rPr in doc.element.body.iter(f"{{{_NS}}}rPr"):
-        # Skip runs inside tblHeader rows — let them keep their natural style colour
+        # Skip runs inside tblHeader rows ΓÇö let them keep their natural style colour
         parent_tr = next(
             (a for a in rPr.iterancestors(f"{{{_NS}}}tr")), None
         )
@@ -191,7 +191,7 @@ def set_all_text_black(doc: Document) -> None:
         black.set(f"{{{_NS}}}val", "000000")
         rPr.insert(0, black)
 
-    # Also apply to headers and footers — they are separate XML parts not in body
+    # Also apply to headers and footers ΓÇö they are separate XML parts not in body
     for section in doc.sections:
         for part in (
             section.header, section.even_page_header, section.first_page_header,
@@ -213,7 +213,7 @@ def set_all_text_black(doc: Document) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 13 — Sort tables alphabetically under specified headings
+# Pass 13 ΓÇö Sort tables alphabetically under specified headings
 # ---------------------------------------------------------------------------
 
 def sort_tables_alphabetically(doc: Document) -> None:
@@ -268,7 +268,7 @@ def _sort_table(tbl_elem) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 8 — Reduce font size for NOTE paragraphs
+# Pass 8 ΓÇö Reduce font size for NOTE paragraphs
 # ---------------------------------------------------------------------------
 
 def set_note_text_size(doc: Document) -> None:
@@ -276,11 +276,11 @@ def set_note_text_size(doc: Document) -> None:
     that belong to the same NOTE block (until the next NOTE prefix, a heading,
     or an empty paragraph that is not a list item).
 
-    Applies to body paragraphs only (not table cells — notes rarely appear
+    Applies to body paragraphs only (not table cells ΓÇö notes rarely appear
     inside tables).
     Prefixes and target size are read from prompts.json:
-      note_text_prefixes   : list[str]  – e.g. ["NOTE"]
-      note_text_size_half_pt: int       – half-points (16 = 8 pt)
+      note_text_prefixes   : list[str]  ΓÇô e.g. ["NOTE"]
+      note_text_size_half_pt: int       ΓÇô half-points (16 = 8 pt)
     """
     prefixes  = [p.lower() for p in _CFG.get("note_text_prefixes", [])]
     size_val  = str(_CFG.get("note_text_size_half_pt", 18))
@@ -355,7 +355,7 @@ def set_note_text_size(doc: Document) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 9 — Strip superscript formatting from list-marker runs
+# Pass 9 ΓÇö Strip superscript formatting from list-marker runs
 # ---------------------------------------------------------------------------
 
 _MARKER_RE = re.compile(r'^\d+[.\s]*$')
@@ -403,7 +403,7 @@ def strip_superscript_list_markers(doc: Document) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 14 — Remove specified sections (heading + content)
+# Pass 14 ΓÇö Remove specified sections (heading + content)
 # ---------------------------------------------------------------------------
 
 def remove_sections(doc: Document) -> None:
@@ -429,7 +429,7 @@ def remove_sections(doc: Document) -> None:
                     for nxt in children[i + 1:]:
                         if nxt.tag == f"{{{ns}}}p" and _para_style_id(nxt) in h_ids:
                             break
-                        # Never delete layout paragraphs (inline sectPr) —
+                        # Never delete layout paragraphs (inline sectPr) ΓÇö
                         # they carry the template's header/footer rId links.
                         if nxt.tag == f"{{{ns}}}p":
                             pPr = nxt.find(f"{{{ns}}}pPr")
@@ -464,10 +464,10 @@ def remove_headings_only(doc: Document) -> None:
                 if _para_text(elem).strip().lower() == target:
                     to_remove = [elem]
                     for nxt in children[i + 1:]:
-                        # Stop at any table — keep it
+                        # Stop at any table ΓÇö keep it
                         if nxt.tag == f"{{{ns}}}tbl":
                             break
-                        # Stop at next heading — keep it
+                        # Stop at next heading ΓÇö keep it
                         if nxt.tag == f"{{{ns}}}p" and _para_style_id(nxt) in h_ids:
                             break
                         # Skip layout paragraphs
@@ -481,7 +481,7 @@ def remove_headings_only(doc: Document) -> None:
                     break
 
 
-# Pass 11a — Remove blank paragraphs immediately BEFORE any heading
+# Pass 11a ΓÇö Remove blank paragraphs immediately BEFORE any heading
 def remove_blank_paragraph_before_headings(doc: Document) -> None:
     """Remove ALL consecutive empty paragraphs that appear immediately before a Heading.
 
@@ -496,10 +496,10 @@ def remove_blank_paragraph_before_headings(doc: Document) -> None:
             return False
         pPr = elem.find(f"{{{_NS}}}pPr")
         if pPr is not None and pPr.find(f"{{{_NS}}}sectPr") is not None:
-            return False  # layout paragraph — keep
+            return False  # layout paragraph ΓÇö keep
         for br in elem.iter(f"{{{_NS}}}br"):
             if br.get(f"{{{_NS}}}type") == "page":
-                return False  # page-break — keep
+                return False  # page-break ΓÇö keep
         text = ''.join(t.text or '' for t in elem.iter(f"{{{_NS}}}t")).strip()
         has_drawing = any(n.tag == qn('w:drawing') for n in elem.iter())
         return not text and not has_drawing
@@ -542,10 +542,10 @@ def remove_blank_paragraph_after_headings(doc: Document) -> None:
             return False
         pPr = elem.find(f"{{{_NS}}}pPr")
         if pPr is not None and pPr.find(f"{{{_NS}}}sectPr") is not None:
-            return False  # layout paragraph — keep
+            return False  # layout paragraph ΓÇö keep
         for br in elem.iter(f"{{{_NS}}}br"):
             if br.get(f"{{{_NS}}}type") == "page":
-                return False  # page-break — keep
+                return False  # page-break ΓÇö keep
         text = ''.join(t.text or '' for t in elem.iter(f"{{{_NS}}}t")).strip()
         has_drawing = any(n.tag == qn('w:drawing') for n in elem.iter())
         return not text and not has_drawing
@@ -576,7 +576,7 @@ def remove_blank_paragraph_after_headings(doc: Document) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pass 1 — Fill placeholders throughout document
+# Pass 1 ΓÇö Fill placeholders throughout document
 # ---------------------------------------------------------------------------
 
 def fill_header_footer_placeholders(doc: Document, product_name: str | None) -> None:
@@ -654,7 +654,7 @@ def fill_header_footer_placeholders(doc: Document, product_name: str | None) -> 
 
 
 # ---------------------------------------------------------------------------
-# Public API — passes 2, 5, 6, 11, 12, 15
+# Public API ΓÇö passes 2, 5, 6, 11, 12, 15
 # ---------------------------------------------------------------------------
 
 # Pass 2
@@ -691,14 +691,14 @@ def remove_preamble_before_first_heading(doc: Document) -> None:
             pre_heading_paras.append(elem)
 
     # Find the FIRST and LAST page-break paragraphs.
-    # The template has: COVER → [break1] → instruction page → [break2] → TOC → [break3] → content.
-    # After removing the instruction page, we want to keep break1 (cover→TOC) and
-    # break3 (TOC→content). Any intermediate page-break paragraphs are removed.
+    # The template has: COVER ΓåÆ [break1] ΓåÆ instruction page ΓåÆ [break2] ΓåÆ TOC ΓåÆ [break3] ΓåÆ content.
+    # After removing the instruction page, we want to keep break1 (coverΓåÆTOC) and
+    # break3 (TOCΓåÆcontent). Any intermediate page-break paragraphs are removed.
     pb_indices = [i for i, e in enumerate(pre_heading_paras) if _has_page_break(e)]
     keep_pb = set()
     if pb_indices:
-        keep_pb.add(pb_indices[0])   # first: cover → TOC
-        keep_pb.add(pb_indices[-1])  # last:  TOC  → content
+        keep_pb.add(pb_indices[0])   # first: cover ΓåÆ TOC
+        keep_pb.add(pb_indices[-1])  # last:  TOC  ΓåÆ content
 
     to_remove = []
     for i, elem in enumerate(pre_heading_paras):
@@ -720,10 +720,10 @@ def strip_inline_angle_brackets(doc: Document) -> None:
     table cells), and strip inline '<...>' comment substrings.
 
     Handles three cases:
-    1. Standalone bracket runs: a run whose only text is '<' or '>' — removed.
-    2. Single-run inline comment: '<...>' fully within one run's text — stripped.
+    1. Standalone bracket runs: a run whose only text is '<' or '>' ΓÇö removed.
+    2. Single-run inline comment: '<...>' fully within one run's text ΓÇö stripped.
     3. Multi-run inline comment: '<' in one run and '>' in a later run of the
-       same paragraph — all runs from the opening '<' to the closing '>' are
+       same paragraph ΓÇö all runs from the opening '<' to the closing '>' are
        cleaned so the bracketed span is removed.
     """
     if not _CFG.get("strip_inline_angle_brackets", False):
@@ -734,7 +734,7 @@ def strip_inline_angle_brackets(doc: Document) -> None:
     def _strip_para(p_elem) -> None:
         runs = list(p_elem.findall(f"{{{_NS}}}r"))
 
-        # Pass A — standalone bracket runs and single-run inline comments
+        # Pass A ΓÇö standalone bracket runs and single-run inline comments
         for r in runs:
             t_elems = r.findall(f"{{{_NS}}}t")
             run_text = "".join(t.text or "" for t in t_elems).strip()
@@ -749,7 +749,7 @@ def strip_inline_angle_brackets(doc: Document) -> None:
                     for t in t_elems[1:]:
                         t.text = ""
 
-        # Pass B — multi-run inline comments (re-read after Pass A removals)
+        # Pass B ΓÇö multi-run inline comments (re-read after Pass A removals)
         runs = list(p_elem.findall(f"{{{_NS}}}r"))
         open_run_idx = None
         for idx, r in enumerate(runs):
@@ -757,7 +757,7 @@ def strip_inline_angle_brackets(doc: Document) -> None:
             if open_run_idx is None:
                 lt_pos = run_text.find("<")
                 if lt_pos != -1:
-                    # Check the rest of this run — if '>' is also here, no span needed
+                    # Check the rest of this run ΓÇö if '>' is also here, no span needed
                     after = run_text[lt_pos:]
                     if ">" not in after:
                         open_run_idx = idx
@@ -780,7 +780,7 @@ def strip_inline_angle_brackets(doc: Document) -> None:
                             parent.remove(mid)
                     open_run_idx = None
                 else:
-                    # Entirely inside comment span — blank it out
+                    # Entirely inside comment span ΓÇö blank it out
                     for t in r.findall(f"{{{_NS}}}t"):
                         t.text = ""
 
@@ -899,7 +899,7 @@ def inject_definitions_fixed_rows(doc: Document) -> None:
         tbl_elem.append(new_row)
 
 # ---------------------------------------------------------------------------
-# Pass 16b — Prepend header row to compliance checklist table
+# Pass 16b ΓÇö Prepend header row to compliance checklist table
 # ---------------------------------------------------------------------------
 
 def prepend_compliance_table_header(doc: Document, template_path: str | None = None) -> None:
@@ -912,9 +912,9 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
 
     Layout produced (on a fresh page):
       [page break]
-      [main compliance table — tblHeader rows at top repeat every page]
-        Row 0 [tblHeader]: spanning cell — standard name, centred, grey 9pt
-        Row 1 [tblHeader]: CI. | Requirement–Test | Result–Ref–Remark | Verdict, grey 9pt
+      [main compliance table ΓÇö tblHeader rows at top repeat every page]
+        Row 0 [tblHeader]: spanning cell ΓÇö standard name, centred, grey 9pt
+        Row 1 [tblHeader]: CI. | RequirementΓÇôTest | ResultΓÇôRefΓÇôRemark | Verdict, grey 9pt
         Row 2+: data rows unchanged
     """
     cfg: dict = _CFG.get("compliance_table_header", {})
@@ -928,7 +928,7 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
 
     # ------------------------------------------------------------------
     # Auto-detect heading_text, columns, spanning_header from template.
-    # All three can be left blank/empty in prompts.json — the template
+    # All three can be left blank/empty in prompts.json ΓÇö the template
     # docx is the single source of truth.
     # ------------------------------------------------------------------
     if not heading_text and template_path and os.path.isfile(template_path):
@@ -953,7 +953,7 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
                     elif _in_sec and _e.tag == f"{W}tbl":
                         _sec_tables.append(_e)
 
-                # spanning_text — from "Standard:" cell in any section table
+                # spanning_text ΓÇö from "Standard:" cell in any section table
                 if not spanning_text:
                     for _tbl in _sec_tables:
                         for _row in _tbl.findall(f"{W}tr"):
@@ -974,7 +974,7 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
                         if spanning_text:
                             break
 
-                # columns — read only from explicit tblHeader rows in the biggest
+                # columns ΓÇö read only from explicit tblHeader rows in the biggest
                 # template table. Never infer from data rows to avoid false positives.
                 if not columns:
                     _best    = 0
@@ -1038,7 +1038,7 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         return
 
     # ------------------------------------------------------------------
-    # Idempotency — skip if tblHeader rows already present in table
+    # Idempotency ΓÇö skip if tblHeader rows already present in table
     # ------------------------------------------------------------------
     _check_val = spanning_text.lower() if spanning_text else (columns[0].lower() if columns else "")
     first_trPr = out_rows[0].find(f"{W}trPr")
@@ -1106,30 +1106,40 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     w_type = out_widths[0][1] if out_widths else "dxa"
 
     # ------------------------------------------------------------------
-    # Styling — read from prompts.json compliance_table_header.style
-    # (falls back to defaults if omitted)
+    # Styling — sniff from the output table's first data row so headers
+    # automatically match the template's own font, size, color, bold.
+    # prompts.json style block can override individual values.
     # ------------------------------------------------------------------
     _style      = cfg.get("style", {})
-    GREY        = _style.get("header_color",           "808080")
-    BORDER_CLR  = _style.get("border_color",           "BFBFBF")
-    SPAN_FONT_SZ = str(int(_style.get("span_font_size_halfpt", 28)))  # half-pts — ISO banner row
-    COL_FONT_SZ  = str(int(_style.get("col_font_size_halfpt",  22)))  # half-pts — column label row
-    span_height = int(_style.get("span_row_height_twips",    480))
-    col_height  = int(_style.get("col_row_height_twips",     300))
+    span_height = int(_style.get("span_row_height_twips", 480))
+    col_height  = int(_style.get("col_row_height_twips",  300))
 
-    def _cell_borders(tcPr_el):
-        """Override all cell borders with thin grey lines."""
-        tcBdr = etree.SubElement(tcPr_el, f"{W}tcBorders")
-        for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
-            b = etree.SubElement(tcBdr, f"{W}{side}")
-            b.set(f"{W}val",   "single")
-            b.set(f"{W}sz",    "4")
-            b.set(f"{W}space", "0")
-            b.set(f"{W}color", BORDER_CLR)
+    # Sniff rPr from the first data cell in the output table
+    _sniff_sz   = "22"   # 11 pt default
+    _sniff_bold = True
+    for _sr in out_rows:
+        _sc = _sr.findall(f"{W}tc")
+        if not _sc:
+            continue
+        _sp = _sc[0].find(f"{W}p")
+        if _sp is None:
+            continue
+        _srPr = _sp.find(f"{W}pPr/{W}rPr")
+        if _srPr is None:
+            _srPr = _sp.find(f"{W}r/{W}rPr")
+        if _srPr is not None:
+            _sz_e = _srPr.find(f"{W}sz")
+            if _sz_e is not None:
+                _sniff_sz = _sz_e.get(f"{W}val", _sniff_sz)
+            _sniff_bold = _srPr.find(f"{W}b") is not None
+        break
 
-    def _make_hdr_cell(w_val, w_type_val, text, center=False, gridspan=None, font_sz=None):
-        """Build a tblHeader cell with grey text, no bold."""
-        _fsz = font_sz or SPAN_FONT_SZ
+    # Allow prompts.json overrides
+    FONT_SZ     = str(int(_style.get("font_size_halfpt", int(_sniff_sz))))
+    USE_BOLD    = _style.get("header_bold", _sniff_bold)
+
+    def _make_hdr_cell(w_val, w_type_val, text, center=False, gridspan=None):
+        """Build a tblHeader cell styled to match the table's own data rows."""
         tc = etree.Element(f"{W}tc")
         tcPr = etree.SubElement(tc, f"{W}tcPr")
         tcW_e = etree.SubElement(tcPr, f"{W}tcW")
@@ -1138,7 +1148,6 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         if gridspan:
             gs = etree.SubElement(tcPr, f"{W}gridSpan")
             gs.set(f"{W}val", str(gridspan))
-        _cell_borders(tcPr)
 
         p = etree.SubElement(tc, f"{W}p")
         pPr = etree.SubElement(p, f"{W}pPr")
@@ -1146,15 +1155,19 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
             jc = etree.SubElement(pPr, f"{W}jc")
             jc.set(f"{W}val", "center")
         pRpr = etree.SubElement(pPr, f"{W}rPr")
-        etree.SubElement(pRpr, f"{W}color").set(f"{W}val", GREY)
-        etree.SubElement(pRpr, f"{W}sz").set(f"{W}val", _fsz)
-        etree.SubElement(pRpr, f"{W}szCs").set(f"{W}val", _fsz)
+        if USE_BOLD:
+            etree.SubElement(pRpr, f"{W}b")
+            etree.SubElement(pRpr, f"{W}bCs")
+        etree.SubElement(pRpr, f"{W}sz").set(f"{W}val", FONT_SZ)
+        etree.SubElement(pRpr, f"{W}szCs").set(f"{W}val", FONT_SZ)
 
         r = etree.SubElement(p, f"{W}r")
         rPr = etree.SubElement(r, f"{W}rPr")
-        etree.SubElement(rPr, f"{W}color").set(f"{W}val", GREY)
-        etree.SubElement(rPr, f"{W}sz").set(f"{W}val", _fsz)
-        etree.SubElement(rPr, f"{W}szCs").set(f"{W}val", _fsz)
+        if USE_BOLD:
+            etree.SubElement(rPr, f"{W}b")
+            etree.SubElement(rPr, f"{W}bCs")
+        etree.SubElement(rPr, f"{W}sz").set(f"{W}val", FONT_SZ)
+        etree.SubElement(rPr, f"{W}szCs").set(f"{W}val", FONT_SZ)
         t = etree.SubElement(r, f"{W}t")
         t.text = text
         t.set(f"{{{XML_NS}}}space", "preserve")
@@ -1180,98 +1193,32 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     # ------------------------------------------------------------------
     insert_idx = list(out_tbl).index(out_rows[0])
 
-    # Row 1: spanning cell — standard name, centred (only if we have text)
-    # Height 480 twips (~8.5 mm) — visible, matches screenshot title row height
+    # Row 1: spanning cell ΓÇö standard name, centred (only if we have text)
+    # Height 480 twips (~8.5 mm) ΓÇö visible, matches screenshot title row height
     if spanning_text:
         span_row = _make_hdr_row(
             _make_hdr_cell(str(total_w), w_type, spanning_text,
-                           center=True, gridspan=n_cols, font_sz=SPAN_FONT_SZ),
+                           center=True, gridspan=n_cols),
             row_height_twips=span_height,
         )
         out_tbl.insert(insert_idx, span_row)
         insert_idx += 1
 
-    # Row 2: column labels — only if column names were provided/detected
+    # Row 2: column labels ΓÇö only if column names were provided/detected
     # Height 300 twips (~5.3 mm)
     if columns:
         col_cells = []
         for ci, col_text in enumerate(columns):
             w_val, w_type_val = out_widths[ci]
             is_last = (ci == len(columns) - 1)
-            col_cells.append(_make_hdr_cell(w_val, w_type_val, col_text,
-                                            center=is_last, font_sz=COL_FONT_SZ))
+            col_cells.append(_make_hdr_cell(w_val, w_type_val, col_text, center=is_last))
         col_row = _make_hdr_row(*col_cells, row_height_twips=col_height)
         out_tbl.insert(insert_idx, col_row)
-
-    # ------------------------------------------------------------------
-    # Spacing: insert a blank paragraph after the test-admin table
-    # (i.e. between that table and the page-break paragraph before the
-    # compliance checklist), so the visual gap matches the template.
-    # ------------------------------------------------------------------
-    _doc_body2   = out_tbl.getparent()
-    _body_list2  = list(_doc_body2)
-    _tbl_idx2    = _body_list2.index(out_tbl)
-    # Walk backward to find the previous table (test-admin)
-    _prev_tbl_idx = None
-    for _bi in range(_tbl_idx2 - 1, -1, -1):
-        if _body_list2[_bi].tag == f"{W}tbl":
-            _prev_tbl_idx = _bi
-            break
-        if _body_list2[_bi].tag == f"{W}p" and _para_style_id(_body_list2[_bi]) in h_ids:
-            break
-    if _prev_tbl_idx is not None:
-        # Count blank paragraphs between the previous table and out_tbl
-        _gap_paras = [
-            _body_list2[_gi] for _gi in range(_prev_tbl_idx + 1, _tbl_idx2)
-            if _body_list2[_gi].tag == f"{W}p"
-        ]
-        if len(_gap_paras) < 2:
-            # Insert an extra blank paragraph right after the previous table
-            _spacer = etree.Element(f"{W}p")
-            _doc_body2.insert(_prev_tbl_idx + 1, _spacer)
-
-    # ------------------------------------------------------------------
-    # Clone the exact same tblHeader rows into every OTHER table in the
-    # compliance heading section (e.g. the test-admin table before the
-    # checklist), so all pages show an identical repeating header.
-    # We deep-copy the tblHeader rows already inserted in out_tbl and
-    # prepend them verbatim into sibling tables — Word renders tblHeader
-    # rows independently of the table's own column grid, so the same
-    # ISO banner + CI./Requirement header appears on every page.
-    # ------------------------------------------------------------------
-    _src_hdr_rows = [
-        r for r in out_tbl.findall(f"{W}tr")
-        if r.find(f"{W}trPr") is not None
-        and r.find(f"{W}trPr").find(f"{W}tblHeader") is not None
-    ]
-    if _src_hdr_rows:
-        import copy
-        for _i2, _e2 in enumerate(body_children):
-            if _e2.tag == f"{W}p" and _para_style_id(_e2) in h_ids:
-                if _para_text(_e2).strip().lower() == heading_text.lower():
-                    for _nxt2 in body_children[_i2 + 1:]:
-                        if _nxt2.tag == f"{W}p" and _para_style_id(_nxt2) in h_ids:
-                            break
-                        if _nxt2.tag == f"{W}tbl" and _nxt2 is not out_tbl:
-                            _other_rows = _nxt2.findall(f"{W}tr")
-                            if not _other_rows:
-                                continue
-                            # Skip if already has a tblHeader row
-                            _ftrPr = _other_rows[0].find(f"{W}trPr")
-                            if (_ftrPr is not None
-                                    and _ftrPr.find(f"{W}tblHeader") is not None):
-                                continue
-                            _ins_idx2 = list(_nxt2).index(_other_rows[0])
-                            for _src_row in _src_hdr_rows:
-                                _cloned = copy.deepcopy(_src_row)
-                                _nxt2.insert(_ins_idx2, _cloned)
-                                _ins_idx2 += 1
-                    break
 
 
 
 # ---------------------------------------------------------------------------
-# Pass 16 — Normalize rFonts attributes to remove locale-specific overrides
+# Pass 16 ΓÇö Normalize rFonts attributes to remove locale-specific overrides
 # ---------------------------------------------------------------------------
 
 def normalize_rfonts(doc: Document) -> None:
@@ -1310,7 +1257,7 @@ def mark_toc_dirty(doc: Document) -> None:
                 fldChar.set(f"{W}dirty", "1")
 
 # ---------------------------------------------------------------------------
-# Pass 17 — Fill ISO info table cells from source doc's matching table
+# Pass 17 ΓÇö Fill ISO info table cells from source doc's matching table
 #            Copies full paragraph XML (preserving fonts, colours, images)
 # ---------------------------------------------------------------------------
 
@@ -1408,8 +1355,8 @@ def fill_table_from_source(doc: Document, data_doc_path: str | None, template_pa
         Return the effective checked state ('0' or '1') of a FORMCHECKBOX in a cell.
 
         Word uses two optional sub-elements inside <w:checkBox>:
-          w:checked  — current runtime state (takes priority when present)
-          w:default  — initial/default state (fallback)
+          w:checked  ΓÇö current runtime state (takes priority when present)
+          w:default  ΓÇö initial/default state (fallback)
         We read w:checked first; fall back to w:default.
         """
         for fldChar in tc_elem.iter(f"{W}fldChar"):
@@ -1484,9 +1431,9 @@ def fill_table_from_source(doc: Document, data_doc_path: str | None, template_pa
         return best_tbl if best_score > 0 else None
 
     # Prefix used to normalise standard-specific "fulfils" rows so that inputs
-    # with different standards (ISO 17664-2, DIN 6868-157, IEC 62304, …) all
+    # with different standards (ISO 17664-2, DIN 6868-157, IEC 62304, ΓÇª) all
     # resolve to the same lookup key regardless of which standard is named.
-    # Moved to config — _FULFILS_PREFIX already set from cfg above.
+    # Moved to config ΓÇö _FULFILS_PREFIX already set from cfg above.
 
     def _normalise_label(lbl: str) -> str:
         return _FULFILS_PREFIX if lbl.startswith(_FULFILS_PREFIX) else lbl
@@ -1502,7 +1449,7 @@ def fill_table_from_source(doc: Document, data_doc_path: str | None, template_pa
     if src_tbl is None:
         return []
 
-    # Build map: lowercase source label → source tc element.
+    # Build map: lowercase source label ΓåÆ source tc element.
     # For "fulfils" rows also store the entry under the generic normalised key
     # so it can be found regardless of which standard the source doc names.
     src_label_to_tc: dict = {}
@@ -1566,7 +1513,7 @@ def fill_table_from_source(doc: Document, data_doc_path: str | None, template_pa
         if src_tc is None:
             continue
 
-        # ── Checkbox-only rows ────────────────────────────────────────────
+        # ΓöÇΓöÇ Checkbox-only rows ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
         # For rows listed in row_copy_checkbox_only, preserve the template's
         # own text and only copy the checked/unchecked state from the source.
         target_cell = cells[1] if len(cells) == 2 else cells[0]
