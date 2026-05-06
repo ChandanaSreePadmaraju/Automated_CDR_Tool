@@ -990,6 +990,31 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     if not out_rows:
         return
 
+    # ---------------------------------------------------------------
+    # Ensure the compliance table always starts at the TOP of a new page
+    # so the tblHeader looks identical to how it repeats on later pages.
+    # We insert a page-break paragraph between the admin table and the
+    # compliance table — only once (idempotent).
+    # ---------------------------------------------------------------
+    _doc_body = out_tbl.getparent()
+    if _doc_body is not None:
+        _body_list = list(_doc_body)
+        _tbl_idx = _body_list.index(out_tbl)
+        _prev_el = _body_list[_tbl_idx - 1] if _tbl_idx > 0 else None
+        _existing_br = (
+            _prev_el.find(f".//{W}br") if _prev_el is not None else None
+        )
+        _has_pg_break = (
+            _existing_br is not None
+            and _existing_br.get(f"{W}type", "") == "page"
+        )
+        if not _has_pg_break:
+            _pg_p = etree.Element(f"{W}p")
+            _pg_r = etree.SubElement(_pg_p, f"{W}r")
+            _pg_br = etree.SubElement(_pg_r, f"{W}br")
+            _pg_br.set(f"{W}type", "page")
+            _doc_body.insert(_tbl_idx, _pg_p)
+
     # Idempotency — check for spanning header first (if configured), else column[0]
     _check_text = spanning_text if spanning_text else (columns[0] if columns else "")
     if _check_text.lower() in "".join(
