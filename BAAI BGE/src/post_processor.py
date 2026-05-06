@@ -902,26 +902,26 @@ def inject_definitions_fixed_rows(doc: Document) -> None:
 
 def prepend_compliance_table_header(doc: Document, template_path: str | None = None) -> None:
     """
-    Prepend a column-header row to the compliance table.
+    Insert a separate compact grey header table before the compliance data table.
 
-    All formatting is read at runtime from the template document itself —
-    nothing is hardcoded.  Strategy:
-      1. Open the template doc and find its largest table under the configured
-         heading (same search as for the output doc).
-      2. Find the first row in that table that has actual text content and
-         matches the expected column count — this is a section-header style
-         row whose pPr/rPr/tcPr carry the correct font, size, spacing etc.
-      3. Deepcopy that row wholesale: replace only the text in each cell.
-      4. Adjust each cell's tcW width to match the actual widths found in the
-         output table (which may differ because content was filled in).
-      5. Prepend the new row and mark it as tblHeader.
+    Layout produced (all on a fresh page):
+      [page break]
+      [2-row mini header table — thin grey borders, grey text, ~9 pt, no bold]
+        Row 1: spanning cell with the standard name, centred
+        Row 2: CI. | Requirement – Test | Result – Reference – Remark | Verdict
+      [small gap paragraph]
+      [main compliance data table — unchanged, starts with "4 | Risk analysis"]
+
+    Nothing is hardcoded: column widths are read from the main table's first
+    data row; the spanning text is auto-detected from the template's admin
+    table "Standard:" cell if prompts.json leaves it blank.
     """
     cfg: dict = _CFG.get("compliance_table_header", {})
     if not cfg:
         return
 
     heading_text: str = cfg.get("heading", "")
-    columns: list = cfg.get("columns", [])
+    columns: list  = cfg.get("columns", [])
     spanning_text: str = cfg.get("spanning_header", "")
     if not heading_text or not columns:
         return
@@ -929,8 +929,9 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     W = f"{{{_NS}}}"
     XML_NS = "http://www.w3.org/XML/1998/namespace"
 
-    # Auto-detect spanning_header from the template's admin table "Standard:" row
-    # if prompts.json left it blank. Works for any ISO/IEC/EN standard template.
+    # ------------------------------------------------------------------
+    # Auto-detect spanning_header from template "Standard:" row if blank
+    # ------------------------------------------------------------------
     if not spanning_text and template_path and os.path.isfile(template_path):
         try:
             _td = Document(template_path)
@@ -943,7 +944,6 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
                             if _nxt.tag == f"{W}p" and _para_style_id(_nxt) in _td_h_ids:
                                 break
                             if _nxt.tag == f"{W}tbl":
-                                # First (smallest) table under heading = admin info table
                                 for _row in _nxt.findall(f"{W}tr"):
                                     _cells = _row.findall(f"{W}tc")
                                     if len(_cells) >= 2:
@@ -959,11 +959,10 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
                                     break
                         break
         except Exception:
-            pass  # auto-detect failed, proceed without spanning row
-    XML_NS = "http://www.w3.org/XML/1998/namespace"
+            pass
 
     # ------------------------------------------------------------------
-    # 1. Locate the compliance table in the OUTPUT doc
+    # Locate the main compliance table (largest table under heading)
     # ------------------------------------------------------------------
     h_ids = _heading_style_ids(doc)
     body_children = list(doc.element.body)
@@ -986,43 +985,45 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     if out_tbl is None:
         return
 
-    out_rows = out_tbl.findall(f"{W}tr")
-    if not out_rows:
-        return
-
-    # ---------------------------------------------------------------
-    # Ensure the compliance table always starts at the TOP of a new page
-    # so the tblHeader looks identical to how it repeats on later pages.
-    # We insert a page-break paragraph between the admin table and the
-    # compliance table — only once (idempotent).
-    # ---------------------------------------------------------------
     _doc_body = out_tbl.getparent()
-    if _doc_body is not None:
-        _body_list = list(_doc_body)
-        _tbl_idx = _body_list.index(out_tbl)
-        _prev_el = _body_list[_tbl_idx - 1] if _tbl_idx > 0 else None
-        _existing_br = (
-            _prev_el.find(f".//{W}br") if _prev_el is not None else None
-        )
-        _has_pg_break = (
-            _existing_br is not None
-            and _existing_br.get(f"{W}type", "") == "page"
-        )
-        if not _has_pg_break:
-            _pg_p = etree.Element(f"{W}p")
-            _pg_r = etree.SubElement(_pg_p, f"{W}r")
-            _pg_br = etree.SubElement(_pg_r, f"{W}br")
-            _pg_br.set(f"{W}type", "page")
-            _doc_body.insert(_tbl_idx, _pg_p)
+    _body_list = list(_doc_body)
+    _tbl_idx   = _body_list.index(out_tbl)
 
-    # Idempotency — check for spanning header first (if configured), else column[0]
-    _check_text = spanning_text if spanning_text else (columns[0] if columns else "")
-    if _check_text.lower() in "".join(
-        t.text or "" for t in out_rows[0].iter(f"{W}t")
-    ).strip().lower():
-        return
+    # ------------------------------------------------------------------
+    # Idempotency — if a mini header table is already present before the
+    # main table, skip. Only check small tables (≤ 3 rows); the admin
+    # table (18 rows) also contains the spanning text but must not trigger.
+    # ------------------------------------------------------------------
+    _check_val = spanning_text.lower() if spanning_text else (columns[0].lower() if columns else "")
+    for _prev in _body_list[:_tbl_idx]:
+        if _prev.tag == f"{W}tbl":
+            _prev_rows = _prev.findall(f"{W}tr")
+            if len(_prev_rows) <= 3:  # mini header table only; skip large admin table
+                _prev_text = "".join(t.text or "" for t in _prev.iter(f"{W}t")).strip().lower()
+                if _check_val and _check_val in _prev_text:
+                    return
 
-    # Collect cell widths from the first row with len(columns) cells
+    # ------------------------------------------------------------------
+    # Ensure a page break exists immediately before the mini header table
+    # ------------------------------------------------------------------
+    _prev_el = _body_list[_tbl_idx - 1] if _tbl_idx > 0 else None
+    _existing_br = _prev_el.find(f".//{W}br") if _prev_el is not None else None
+    _has_pg_break = (
+        _existing_br is not None
+        and _existing_br.get(f"{W}type", "") == "page"
+    )
+    if not _has_pg_break:
+        _pg_p = etree.Element(f"{W}p")
+        _pg_r = etree.SubElement(_pg_p, f"{W}r")
+        _pg_br = etree.SubElement(_pg_r, f"{W}br")
+        _pg_br.set(f"{W}type", "page")
+        _doc_body.insert(_tbl_idx, _pg_p)
+        _tbl_idx += 1  # main table shifted by one
+
+    # ------------------------------------------------------------------
+    # Read column widths from main table's first full-width data row
+    # ------------------------------------------------------------------
+    out_rows   = out_tbl.findall(f"{W}tr")
     out_widths: list[tuple[str, str]] = []
     for r in out_rows:
         cells = r.findall(f"{W}tc")
@@ -1037,327 +1038,103 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     while len(out_widths) < len(columns):
         out_widths.append(("0", "dxa"))
 
-    # ------------------------------------------------------------------
-    # 2. Find a style-donor row from the TEMPLATE doc
-    # ------------------------------------------------------------------
-    donor_row = None
-    if template_path and os.path.isfile(template_path):
-        tmpl_doc = Document(template_path)
-        tmpl_h_ids = _heading_style_ids(tmpl_doc)
-        tmpl_children = list(tmpl_doc.element.body)
-
-        tmpl_tbl = None
-        best_t = 0
-        for i, elem in enumerate(tmpl_children):
-            if elem.tag == f"{W}p" and _para_style_id(elem) in tmpl_h_ids:
-                if _para_text(elem).strip().lower() == heading_text.lower():
-                    for nxt in tmpl_children[i + 1:]:
-                        if nxt.tag == f"{W}p" and _para_style_id(nxt) in tmpl_h_ids:
-                            break
-                        if nxt.tag == f"{W}tbl":
-                            n = len(nxt.findall(f"{W}tr"))
-                            if n > best_t:
-                                best_t = n
-                                tmpl_tbl = nxt
-                    break
-
-        if tmpl_tbl is not None:
-            # Always use the first row that has text — these are section-header
-            # rows (e.g. "4 | Risk analysis") and carry the correct bold/font
-            # styling for a table header.  Data rows (4-col content rows) must
-            # NOT be used as the donor even if their cell count matches,
-            # because they carry content/data formatting, not header formatting.
-            for r in tmpl_tbl.findall(f"{W}tr"):
-                if "".join(t.text or "" for t in r.iter(f"{W}t")).strip():
-                    donor_row = r
-                    break
+    try:
+        total_w = sum(int(wv) for wv, _ in out_widths)
+    except (ValueError, TypeError):
+        total_w = 0
+    w_type = out_widths[0][1] if out_widths else "dxa"
 
     # ------------------------------------------------------------------
-    # 3. Build the header row
-    #    If we have a donor row: deepcopy it and patch widths + text.
-    #    If not (template unavailable): copy the first row of the output
-    #    table — still better than hardcoding.
+    # Build the mini header table
+    #   - Thin grey borders (single, sz=4, color BFBFBF)
+    #   - Grey text (808080), no bold, 9 pt (sz=18)
     # ------------------------------------------------------------------
-    if donor_row is not None:
-        new_row = deepcopy(donor_row)
-    else:
-        ref = next((r for r in out_rows if len(r.findall(f"{W}tc")) == len(columns)), out_rows[0])
-        new_row = deepcopy(ref)
+    GREY        = "808080"
+    BORDER_CLR  = "BFBFBF"
+    FONT_SZ     = "18"   # 9 pt
 
-    # Mark as repeating header
-    trPr = new_row.find(f"{W}trPr")
-    if trPr is None:
-        trPr = etree.Element(f"{W}trPr")
-        new_row.insert(0, trPr)
-    if trPr.find(f"{W}cantSplit") is None:
-        trPr.insert(0, etree.Element(f"{W}cantSplit"))
-    if trPr.find(f"{W}tblHeader") is None:
-        etree.SubElement(trPr, f"{W}tblHeader")
+    def _border_set(parent_el):
+        """Attach a full border set with thin grey lines to parent_el."""
+        bdr = etree.SubElement(parent_el, f"{W}tblBorders")
+        for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
+            b = etree.SubElement(bdr, f"{W}{side}")
+            b.set(f"{W}val",   "single")
+            b.set(f"{W}sz",    "4")
+            b.set(f"{W}space", "0")
+            b.set(f"{W}color", BORDER_CLR)
 
-    # Ensure there are exactly len(columns) cells; if donor had fewer
-    # (e.g. 3-col row with gridSpan), we need to expand it.
-    cells = new_row.findall(f"{W}tc")
+    def _grey_cell(w_val, w_type_val, text, center=False, gridspan=None):
+        """Build a single table cell with grey-styled text."""
+        tc = etree.Element(f"{W}tc")
+        tcPr = etree.SubElement(tc, f"{W}tcPr")
+        tcW_e = etree.SubElement(tcPr, f"{W}tcW")
+        tcW_e.set(f"{W}w",    w_val)
+        tcW_e.set(f"{W}type", w_type_val)
+        if gridspan:
+            gs = etree.SubElement(tcPr, f"{W}gridSpan")
+            gs.set(f"{W}val", str(gridspan))
 
-    # Remove gridSpan so cells become independent
-    for c in cells:
-        tcPr = c.find(f"{W}tcPr")
-        if tcPr is not None:
-            gs = tcPr.find(f"{W}gridSpan")
-            if gs is not None:
-                tcPr.remove(gs)
+        p = etree.SubElement(tc, f"{W}p")
+        pPr = etree.SubElement(p, f"{W}pPr")
+        if center:
+            jc = etree.SubElement(pPr, f"{W}jc")
+            jc.set(f"{W}val", "center")
+        # paragraph-mark rPr — keeps style on last paragraph mark
+        pRpr = etree.SubElement(pPr, f"{W}rPr")
+        _c = etree.SubElement(pRpr, f"{W}color"); _c.set(f"{W}val", GREY)
+        _s = etree.SubElement(pRpr, f"{W}sz");   _s.set(f"{W}val", FONT_SZ)
+        etree.SubElement(pRpr, f"{W}szCs").set(f"{W}val", FONT_SZ)
 
-    # Add missing cells by cloning the last cell
-    while len(new_row.findall(f"{W}tc")) < len(columns):
-        new_row.append(deepcopy(new_row.findall(f"{W}tc")[-1]))
-
-    # Remove extra cells
-    cells = new_row.findall(f"{W}tc")
-    for extra in cells[len(columns):]:
-        new_row.remove(extra)
-
-    # Patch cell widths to match output table and write column text
-    cells = new_row.findall(f"{W}tc")
-    for ci, col_text in enumerate(columns):
-        cell = cells[ci]
-
-        # Update width
-        w_val, w_type = out_widths[ci]
-        tcPr = cell.find(f"{W}tcPr")
-        if tcPr is None:
-            tcPr = etree.SubElement(cell, f"{W}tcPr")
-            cell.insert(0, tcPr)
-        tcW = tcPr.find(f"{W}tcW")
-        if tcW is None:
-            tcW = etree.SubElement(tcPr, f"{W}tcW")
-        tcW.set(f"{W}w", w_val)
-        tcW.set(f"{W}type", w_type)
-
-        # Replace text: keep only the first paragraph, clear runs, add one
-        all_paras = cell.findall(f"{W}p")
-        for extra in all_paras[1:]:
-            cell.remove(extra)
-        p = all_paras[0] if all_paras else etree.SubElement(cell, f"{W}p")
-
-        for r_elem in list(p.findall(f"{W}r")):
-            p.remove(r_elem)
-        for child in list(p):
-            if child.tag not in (f"{W}pPr", f"{W}r"):
-                p.remove(child)
-
-        # Derive rPr from pPr/rPr (always has full font info)
-        pPr = p.find(f"{W}pPr")
-        base_rPr = pPr.find(f"{W}rPr") if pPr is not None else None
-
-        r_new = etree.SubElement(p, f"{W}r")
-        new_rPr = deepcopy(base_rPr) if base_rPr is not None else etree.Element(f"{W}rPr")
-        if new_rPr.find(f"{W}b") is None:
-            new_rPr.insert(0, etree.Element(f"{W}b"))
-        if new_rPr.find(f"{W}bCs") is None:
-            etree.SubElement(new_rPr, f"{W}bCs")
-        r_new.insert(0, new_rPr)
-
-        t = etree.SubElement(r_new, f"{W}t")
-        t.text = col_text
+        r = etree.SubElement(p, f"{W}r")
+        rPr = etree.SubElement(r, f"{W}rPr")
+        _c2 = etree.SubElement(rPr, f"{W}color"); _c2.set(f"{W}val", GREY)
+        _s2 = etree.SubElement(rPr, f"{W}sz");   _s2.set(f"{W}val", FONT_SZ)
+        etree.SubElement(rPr, f"{W}szCs").set(f"{W}val", FONT_SZ)
+        t = etree.SubElement(r, f"{W}t")
+        t.text = text
         t.set(f"{{{XML_NS}}}space", "preserve")
+        return tc
 
-    # Prepend column-header row before the current first data row
-    out_tbl.insert(list(out_tbl).index(out_rows[0]), new_row)
+    mini_tbl = etree.Element(f"{W}tbl")
 
-    # If a spanning header is configured, insert it before the column-header row.
-    # Style it like the Table 1 section-header rows (sz=22, all rFonts themes,
-    # color=auto), NOT like the watermark header in Table 0 (sz=28, cstheme only).
+    # tblPr: width + thin grey borders
+    tblPr = etree.SubElement(mini_tbl, f"{W}tblPr")
+    tblW_e = etree.SubElement(tblPr, f"{W}tblW")
+    tblW_e.set(f"{W}w",    str(total_w))
+    tblW_e.set(f"{W}type", w_type)
+    _border_set(tblPr)
+
+    # Row 1: spanning cell — standard name, centred
     if spanning_text:
-        try:
-            total_w = sum(int(wv) for wv, _ in out_widths)
-        except (ValueError, TypeError):
-            total_w = 0
-        w_type = out_widths[0][1] if out_widths else "dxa"
+        row1 = etree.Element(f"{W}tr")
+        etree.SubElement(etree.SubElement(row1, f"{W}trPr"), f"{W}cantSplit")
+        row1.append(_grey_cell(str(total_w), w_type, spanning_text,
+                               center=True, gridspan=len(columns)))
+        mini_tbl.append(row1)
 
-        span_row = etree.Element(f"{W}tr")
-        sp_trPr = etree.SubElement(span_row, f"{W}trPr")
-        etree.SubElement(sp_trPr, f"{W}cantSplit")
-        etree.SubElement(sp_trPr, f"{W}tblHeader")
-
-        sp_tc = etree.SubElement(span_row, f"{W}tc")
-        sp_tcPr = etree.SubElement(sp_tc, f"{W}tcPr")
-        sp_tcW = etree.SubElement(sp_tcPr, f"{W}tcW")
-        sp_tcW.set(f"{W}w", str(total_w))
-        sp_tcW.set(f"{W}type", w_type)
-        sp_gs = etree.SubElement(sp_tcPr, f"{W}gridSpan")
-        sp_gs.set(f"{W}val", str(len(columns)))
-        # No explicit fill — inherits from table style like every other row
-
-        sp_p = etree.SubElement(sp_tc, f"{W}p")
-        sp_pPr = etree.SubElement(sp_p, f"{W}pPr")
-        # Match Table 1 section-header paragraph style exactly
-        sp_ps = etree.SubElement(sp_pPr, f"{W}pStyle")
-        sp_ps.set(f"{W}val", "Default")
-        etree.SubElement(sp_pPr, f"{W}keepNext")
-        etree.SubElement(sp_pPr, f"{W}keepLines")
-        sp_sp = etree.SubElement(sp_pPr, f"{W}spacing")
-        sp_sp.set(f"{W}before", "66")
-        sp_sp.set(f"{W}after", "54")
-        sp_jc = etree.SubElement(sp_pPr, f"{W}jc")
-        sp_jc.set(f"{W}val", "center")
-        # pPr/rPr: same as section-header rows (sz=22, all three rFonts themes)
-        sp_pRpr = etree.SubElement(sp_pPr, f"{W}rPr")
-        sp_rf_p = etree.SubElement(sp_pRpr, f"{W}rFonts")
-        sp_rf_p.set(f"{W}asciiTheme", "minorHAnsi")
-        sp_rf_p.set(f"{W}hAnsiTheme", "minorHAnsi")
-        sp_rf_p.set(f"{W}cstheme", "minorHAnsi")
-        etree.SubElement(sp_pRpr, f"{W}b")
-        etree.SubElement(sp_pRpr, f"{W}bCs")
-        sp_col_p = etree.SubElement(sp_pRpr, f"{W}color")
-        sp_col_p.set(f"{W}val", "auto")
-        _sp_sz = etree.SubElement(sp_pRpr, f"{W}sz")
-        _sp_sz.set(f"{W}val", "22")
-        _sp_szCs = etree.SubElement(sp_pRpr, f"{W}szCs")
-        _sp_szCs.set(f"{W}val", "22")
-        sp_lg_p = etree.SubElement(sp_pRpr, f"{W}lang")
-        sp_lg_p.set(f"{W}val", "en-US")
-
-        sp_r = etree.SubElement(sp_p, f"{W}r")
-        sp_rPr = etree.SubElement(sp_r, f"{W}rPr")
-        sp_rf_r = etree.SubElement(sp_rPr, f"{W}rFonts")
-        sp_rf_r.set(f"{W}asciiTheme", "minorHAnsi")
-        sp_rf_r.set(f"{W}hAnsiTheme", "minorHAnsi")
-        sp_rf_r.set(f"{W}cstheme", "minorHAnsi")
-        etree.SubElement(sp_rPr, f"{W}b")
-        etree.SubElement(sp_rPr, f"{W}bCs")
-        sp_col_r = etree.SubElement(sp_rPr, f"{W}color")
-        sp_col_r.set(f"{W}val", "auto")
-        _sp_sz_r = etree.SubElement(sp_rPr, f"{W}sz")
-        _sp_sz_r.set(f"{W}val", "22")
-        _sp_szCs_r = etree.SubElement(sp_rPr, f"{W}szCs")
-        _sp_szCs_r.set(f"{W}val", "22")
-        sp_lg_r = etree.SubElement(sp_rPr, f"{W}lang")
-        sp_lg_r.set(f"{W}val", "en-US")
-        sp_t = etree.SubElement(sp_r, f"{W}t")
-        sp_t.text = spanning_text
-        sp_t.set(f"{{{XML_NS}}}space", "preserve")
-
-        # Insert spanning row at the same position as new_row, pushing new_row down
-        col_hdr_idx = list(out_tbl).index(new_row)
-        out_tbl.insert(col_hdr_idx, span_row)
-
-    W = f"{{{_NS}}}"
-    h_ids = _heading_style_ids(doc)
-    body_children = list(doc.element.body)
-
-    # Find the compliance table — the LARGEST table under the heading
-    tbl_elem = None
-    best_rows = 0
-    for i, elem in enumerate(body_children):
-        if elem.tag == f"{W}p" and _para_style_id(elem) in h_ids:
-            if _para_text(elem).strip().lower() == heading_text.lower():
-                for nxt in body_children[i + 1:]:
-                    if nxt.tag == f"{W}p" and _para_style_id(nxt) in h_ids:
-                        break
-                    if nxt.tag == f"{W}tbl":
-                        n = len(nxt.findall(f"{W}tr"))
-                        if n > best_rows:
-                            best_rows = n
-                            tbl_elem = nxt
-                break
-
-    if tbl_elem is None:
-        return
-
-    rows = tbl_elem.findall(f"{W}tr")
-    if not rows:
-        return
-
-    # Idempotency — skip if header already present
-    _check2 = spanning_text if spanning_text else (columns[0] if columns else "")
-    if _check2.lower() in "".join(
-        t.text or "" for t in rows[0].iter(f"{W}t")
-    ).strip().lower():
-        return
-
-    # Read actual column widths from the first row that has len(columns) cells
-    ref_row = next((r for r in rows if len(r.findall(f"{W}tc")) == len(columns)), None)
-    cell_widths: list[tuple[str, str]] = []
-    if ref_row is not None:
-        for c in ref_row.findall(f"{W}tc"):
-            tcW = c.find(f"{W}tcPr/{W}tcW")
-            cell_widths.append((
-                tcW.get(f"{W}w", "0") if tcW is not None else "0",
-                tcW.get(f"{W}type", "dxa") if tcW is not None else "dxa",
-            ))
-    while len(cell_widths) < len(columns):
-        cell_widths.append(("0", "dxa"))
-
-    # ------------------------------------------------------------------
-    # No template available — clone the first data row of the output table
-    # as a style donor (same approach as the primary donor-row path above).
-    # No font attributes are hardcoded here.
-    # ------------------------------------------------------------------
-    XML_NS = "http://www.w3.org/XML/1998/namespace"
-
-    # Use the first row with exactly len(columns) cells as style donor
-    _donor = next((r for r in rows if len(r.findall(f"{W}tc")) == len(columns)), rows[0])
-    new_row = deepcopy(_donor)
-
-    # Ensure trPr has cantSplit + tblHeader
-    _trPr = new_row.find(f"{W}trPr")
-    if _trPr is None:
-        _trPr = etree.Element(f"{W}trPr")
-        new_row.insert(0, _trPr)
-    if _trPr.find(f"{W}cantSplit") is None:
-        _trPr.insert(0, etree.Element(f"{W}cantSplit"))
-    if _trPr.find(f"{W}tblHeader") is None:
-        etree.SubElement(_trPr, f"{W}tblHeader")
-
-    # Remove gridSpan on cloned cells so each becomes independent
-    for _c in new_row.findall(f"{W}tc"):
-        _tcPr = _c.find(f"{W}tcPr")
-        if _tcPr is not None:
-            _gs = _tcPr.find(f"{W}gridSpan")
-            if _gs is not None:
-                _tcPr.remove(_gs)
-
-    # Add / remove cells to exactly len(columns)
-    while len(new_row.findall(f"{W}tc")) < len(columns):
-        new_row.append(deepcopy(new_row.findall(f"{W}tc")[-1]))
-    for _extra in new_row.findall(f"{W}tc")[len(columns):]:
-        new_row.remove(_extra)
-
-    # Patch widths and text — same logic as donor-row path
+    # Row 2: column-name cells
+    row2 = etree.Element(f"{W}tr")
+    etree.SubElement(etree.SubElement(row2, f"{W}trPr"), f"{W}cantSplit")
     for ci, col_text in enumerate(columns):
-        _cell = new_row.findall(f"{W}tc")[ci]
-        _w_val, _w_type = cell_widths[ci]
-        _tcPr2 = _cell.find(f"{W}tcPr")
-        if _tcPr2 is None:
-            _tcPr2 = etree.SubElement(_cell, f"{W}tcPr")
-            _cell.insert(0, _tcPr2)
-        _tcW = _tcPr2.find(f"{W}tcW")
-        if _tcW is None:
-            _tcW = etree.SubElement(_tcPr2, f"{W}tcW")
-        _tcW.set(f"{W}w", _w_val)
-        _tcW.set(f"{W}type", _w_type)
+        is_last = (ci == len(columns) - 1)
+        w_val, w_type_val = out_widths[ci]
+        row2.append(_grey_cell(w_val, w_type_val, col_text, center=is_last))
+    mini_tbl.append(row2)
 
-        _all_p = _cell.findall(f"{W}p")
-        for _ep in _all_p[1:]:
-            _cell.remove(_ep)
-        _p = _all_p[0] if _all_p else etree.SubElement(_cell, f"{W}p")
-        for _r in list(_p.findall(f"{W}r")):
-            _p.remove(_r)
+    # Small gap paragraph between header table and main table
+    gap_p = etree.Element(f"{W}p")
+    gap_pPr = etree.SubElement(gap_p, f"{W}pPr")
+    gap_sp = etree.SubElement(gap_pPr, f"{W}spacing")
+    gap_sp.set(f"{W}before", "40")
+    gap_sp.set(f"{W}after",  "40")
 
-        _pPr = _p.find(f"{W}pPr")
-        _base_rPr = _pPr.find(f"{W}rPr") if _pPr is not None else None
-        _r_new = etree.SubElement(_p, f"{W}r")
-        _new_rPr = deepcopy(_base_rPr) if _base_rPr is not None else etree.Element(f"{W}rPr")
-        if _new_rPr.find(f"{W}b") is None:
-            _new_rPr.insert(0, etree.Element(f"{W}b"))
-        if _new_rPr.find(f"{W}bCs") is None:
-            etree.SubElement(_new_rPr, f"{W}bCs")
-        _r_new.insert(0, _new_rPr)
-        _t = etree.SubElement(_r_new, f"{W}t")
-        _t.text = col_text
-        _t.set(f"{{{XML_NS}}}space", "preserve")
+    # Insert: mini_tbl then gap_p just before the main compliance table.
+    # After both inserts the order will be:
+    #   page-break paragraph → mini_tbl → gap_p → main compliance table
+    _doc_body.insert(_tbl_idx, gap_p)    # gap lands at _tbl_idx; main shifts to +1
+    _doc_body.insert(_tbl_idx, mini_tbl) # mini_tbl at _tbl_idx; gap at +1; main at +2
 
-    # Prepend before the current first row
-    tbl_elem.insert(list(tbl_elem).index(rows[0]), new_row)
+
 
 # ---------------------------------------------------------------------------
 # Pass 16 — Normalize rFonts attributes to remove locale-specific overrides
