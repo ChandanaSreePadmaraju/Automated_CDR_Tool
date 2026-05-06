@@ -1210,14 +1210,14 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         out_tbl.insert(insert_idx, span_row)
         insert_idx += 1
 
-    # Row 2: column labels ΓÇö only if column names were provided/detected
+    # Row 2: column labels — only if column names were provided/detected
     # Height 300 twips (~5.3 mm)
     if columns:
+        _hdr_center = _style.get("header_center", False)
         col_cells = []
         for ci, col_text in enumerate(columns):
             w_val, w_type_val = out_widths[ci]
-            is_last = (ci == len(columns) - 1)
-            col_cells.append(_make_hdr_cell(w_val, w_type_val, col_text, center=is_last))
+            col_cells.append(_make_hdr_cell(w_val, w_type_val, col_text, center=_hdr_center))
         col_row = _make_hdr_row(*col_cells, row_height_twips=col_height)
         out_tbl.insert(insert_idx, col_row)
 
