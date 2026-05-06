@@ -22,6 +22,12 @@
 - Reverted two commits (`mark first spanning row...`, `center all column header cells...`) via `git revert` — no destructive resets.
 - Pushed all changes to `origin/BAAI-BGE`.
 
+### Code Cleanup (`post_processor.py`)
+
+- Removed redundant `import re as _re` inside `prepend_compliance_table_header` — `re` already imported at module level.
+- Removed redundant `from copy import deepcopy` inside `fill_table_from_source` — `deepcopy` already imported at module level.
+- Deleted leftover debug scripts `chk.py` and `inspect_tables.py`.
+
 ---
 
 ## May 5, 2026 (Session 2)
