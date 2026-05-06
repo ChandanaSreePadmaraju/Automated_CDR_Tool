@@ -45,11 +45,16 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 
 def auto_detect_product_name(doc_path: str) -> str | None:
-    """Read product name from the document's Word core properties.
+    """Read product name from the document's Word core properties,
+    then fall back to parsing from the filename.
 
-    Tries title → subject → description in order; returns None if all empty.
-    This avoids any hardcoded product name in config files.
+    Strategy:
+      1. Core properties: title → subject → description
+      2. Filename parsing: text after '(YYYY) ' at end of stem
+         e.g. 'Input1_D001352871 Test Record ISO 17664-2 (2021) Azurion HW R3.docx'
+              → 'Azurion HW R3'
     """
+    import re
     try:
         from docx import Document
         doc = Document(doc_path)
@@ -60,6 +65,11 @@ def auto_detect_product_name(doc_path: str) -> str | None:
                 return val
     except Exception:
         pass
+    # Filename fallback: extract product name after '(YEAR) ' pattern
+    stem = os.path.splitext(os.path.basename(doc_path))[0]
+    m = re.search(r'\((\d{4})\)\s+(.+)$', stem)
+    if m:
+        return m.group(2).strip()
     return None
 
 

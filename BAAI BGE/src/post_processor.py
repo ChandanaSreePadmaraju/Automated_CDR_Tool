@@ -950,9 +950,12 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
                                             t.text or "" for t in _cells[0].iter(f"{W}t")
                                         ).strip().lower()
                                         if "standard" in _label:
-                                            spanning_text = "".join(
+                                            _raw = "".join(
                                                 t.text or "" for t in _cells[-1].iter(f"{W}t")
                                             ).strip()
+                                            # Strip edition suffix e.g. " (Ed. 1.0)" — keep only standard+year
+                                            import re as _re
+                                            spanning_text = _re.sub(r'\s*\(Ed\..*?\)\s*$', '', _raw).strip()
                                             break
                                 if spanning_text:
                                     break
@@ -1088,12 +1091,16 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         t.set(f"{{{XML_NS}}}space", "preserve")
         return tc
 
-    def _make_hdr_row(*cells_el):
-        """Wrap cells into a tblHeader row."""
+    def _make_hdr_row(*cells_el, row_height_twips=None):
+        """Wrap cells into a tblHeader row with optional fixed height."""
         row = etree.Element(f"{W}tr")
         trPr = etree.SubElement(row, f"{W}trPr")
         etree.SubElement(trPr, f"{W}cantSplit")
         etree.SubElement(trPr, f"{W}tblHeader")
+        if row_height_twips:
+            trH = etree.SubElement(trPr, f"{W}trHeight")
+            trH.set(f"{W}val",  str(row_height_twips))
+            trH.set(f"{W}hRule", "atLeast")
         for c in cells_el:
             row.append(c)
         return row
@@ -1105,21 +1112,23 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     insert_idx = list(out_tbl).index(out_rows[0])
 
     # Row 1: spanning cell — standard name, centred (only if we have text)
+    # Height 480 twips (~8.5 mm) — visible, matches screenshot title row height
     if spanning_text:
         span_row = _make_hdr_row(
             _make_hdr_cell(str(total_w), w_type, spanning_text,
-                           center=True, gridspan=len(columns))
+                           center=True, gridspan=len(columns)),
+            row_height_twips=480,
         )
         out_tbl.insert(insert_idx, span_row)
         insert_idx += 1
 
-    # Row 2: column labels
+    # Row 2: column labels — height 300 twips (~5.3 mm)
     col_cells = []
     for ci, col_text in enumerate(columns):
         w_val, w_type_val = out_widths[ci]
         is_last = (ci == len(columns) - 1)
         col_cells.append(_make_hdr_cell(w_val, w_type_val, col_text, center=is_last))
-    col_row = _make_hdr_row(*col_cells)
+    col_row = _make_hdr_row(*col_cells, row_height_twips=300)
     out_tbl.insert(insert_idx, col_row)
 
 
