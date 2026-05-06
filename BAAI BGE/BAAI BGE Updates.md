@@ -2,6 +2,28 @@
 
 ---
 
+## May 6, 2026
+
+### Compliance Table Header Styling (`post_processor.py`, `prompts.json`)
+
+- **Restored grey/9pt/no-bold header rows** — tblHeader rows (ISO banner + CI./Requirement row) now use light grey (`808080`), 9 pt (`font_size_halfpt: 18`), no bold, thin grey borders (`BFBFBF`). Configurable via `prompts.json` style block.
+- **Removed sniff-based approach** — previous attempt to sniff font/bold from data rows (which produced black/11pt/bold headers) was reverted in favour of explicit grey styling matching the reference screenshot.
+
+### Verdict Cell Fix (`post_processor.py`)
+
+- **Section-header rows** (CI. = plain integer e.g. `4`, `5`, `5.1` is excluded) now have their Verdict cell **cleared automatically**. The data doc was filling these with `P`; the template leaves them blank.
+
+### Config Cleanup (`prompts.json`)
+
+- `header_color`, `border_color`, `font_size_halfpt` keys restored to `compliance_table_header.style` block (were temporarily removed during sniff-based approach).
+
+### Git
+
+- Reverted two commits (`mark first spanning row...`, `center all column header cells...`) via `git revert` — no destructive resets.
+- Pushed all changes to `origin/BAAI-BGE`.
+
+---
+
 ## May 5, 2026 (Session 2)
 
 ### Multi-file Upload Support (`app.py`)
