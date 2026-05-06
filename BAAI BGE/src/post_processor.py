@@ -1200,6 +1200,45 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         col_row = _make_hdr_row(*col_cells, row_height_twips=col_height)
         out_tbl.insert(insert_idx, col_row)
 
+    # ------------------------------------------------------------------
+    # Also add the ISO spanning banner to any OTHER tables in the same
+    # compliance heading section (e.g. the test-admin table that precedes
+    # the checklist), so every page in that section shows the same grey
+    # banner at the top via tblHeader repeat.
+    # ------------------------------------------------------------------
+    if spanning_text:
+        for _i2, _e2 in enumerate(body_children):
+            if _e2.tag == f"{W}p" and _para_style_id(_e2) in h_ids:
+                if _para_text(_e2).strip().lower() == heading_text.lower():
+                    for _nxt2 in body_children[_i2 + 1:]:
+                        if _nxt2.tag == f"{W}p" and _para_style_id(_nxt2) in h_ids:
+                            break
+                        if _nxt2.tag == f"{W}tbl" and _nxt2 is not out_tbl:
+                            _other_rows = _nxt2.findall(f"{W}tr")
+                            if not _other_rows:
+                                continue
+                            # Skip if already has a tblHeader row
+                            _ftrPr = _other_rows[0].find(f"{W}trPr")
+                            if (_ftrPr is not None
+                                    and _ftrPr.find(f"{W}tblHeader") is not None):
+                                continue
+                            # Total width from tblGrid
+                            _gc = _nxt2.findall(f"{W}tblGrid/{W}gridCol")
+                            _nc = len(_gc) if _gc else 2
+                            _tw = (
+                                sum(int(gc.get(f"{W}w", "0")) for gc in _gc)
+                                if _gc else total_w
+                            )
+                            _span2 = _make_hdr_row(
+                                _make_hdr_cell(
+                                    str(_tw), "dxa", spanning_text,
+                                    center=True, gridspan=_nc,
+                                ),
+                                row_height_twips=span_height,
+                            )
+                            _nxt2.insert(list(_nxt2).index(_other_rows[0]), _span2)
+                    break
+
 
 
 # ---------------------------------------------------------------------------
