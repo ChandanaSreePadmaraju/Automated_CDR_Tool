@@ -916,52 +916,109 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         Row 2+: data rows unchanged
     """
     cfg: dict = _CFG.get("compliance_table_header", {})
-    if not cfg:
-        return
 
     heading_text: str = cfg.get("heading", "")
-    columns: list  = cfg.get("columns", [])
+    columns: list     = cfg.get("columns", [])
     spanning_text: str = cfg.get("spanning_header", "")
-    if not heading_text or not columns:
-        return
 
     W = f"{{{_NS}}}"
     XML_NS = "http://www.w3.org/XML/1998/namespace"
 
     # ------------------------------------------------------------------
-    # Auto-detect spanning_header from template "Standard:" row if blank
+    # Auto-detect heading_text, columns, spanning_header from template.
+    # All three can be left blank/empty in prompts.json — the template
+    # docx is the single source of truth.
     # ------------------------------------------------------------------
-    if not spanning_text and template_path and os.path.isfile(template_path):
+    if template_path and os.path.isfile(template_path):
         try:
-            _td = Document(template_path)
+            _td      = Document(template_path)
             _td_body = list(_td.element.body)
             _td_h_ids = _heading_style_ids(_td)
-            for _i, _e in enumerate(_td_body):
-                if _e.tag == f"{W}p" and _para_style_id(_e) in _td_h_ids:
-                    if _para_text(_e).strip().lower() == heading_text.lower():
-                        for _nxt in _td_body[_i + 1:]:
-                            if _nxt.tag == f"{W}p" and _para_style_id(_nxt) in _td_h_ids:
-                                break
-                            if _nxt.tag == f"{W}tbl":
-                                for _row in _nxt.findall(f"{W}tr"):
-                                    _cells = _row.findall(f"{W}tc")
-                                    if len(_cells) >= 2:
-                                        _label = "".join(
-                                            t.text or "" for t in _cells[0].iter(f"{W}t")
-                                        ).strip().lower()
-                                        if "standard" in _label:
-                                            _raw = "".join(
-                                                t.text or "" for t in _cells[-1].iter(f"{W}t")
-                                            ).strip()
-                                            # Strip edition suffix e.g. " (Ed. 1.0)" — keep only standard+year
-                                            import re as _re
-                                            spanning_text = _re.sub(r'\s*\(Ed\..*?\)\s*$', '', _raw).strip()
-                                            break
-                                if spanning_text:
+
+            # Step 1 — detect heading_text: heading that precedes the
+            # biggest multi-column table (≥3 cols) in the template.
+            if not heading_text:
+                _cur_h    = ""
+                _best_rows = 0
+                for _e in _td_body:
+                    if _e.tag == f"{W}p" and _para_style_id(_e) in _td_h_ids:
+                        _cur_h = _para_text(_e).strip()
+                    elif _e.tag == f"{W}tbl" and _cur_h:
+                        _rows = _e.findall(f"{W}tr")
+                        if _rows:
+                            _r0_cells = _rows[0].findall(f"{W}tc")
+                            if len(_r0_cells) >= 3 and len(_rows) > _best_rows:
+                                _best_rows = len(_rows)
+                                heading_text = _cur_h
+
+            # Step 2 — collect all tables inside that section
+            if heading_text:
+                _in_sec     = False
+                _sec_tables: list = []
+                for _e in _td_body:
+                    if _e.tag == f"{W}p" and _para_style_id(_e) in _td_h_ids:
+                        if _para_text(_e).strip().lower() == heading_text.lower():
+                            _in_sec = True
+                        elif _in_sec:
+                            break
+                    elif _in_sec and _e.tag == f"{W}tbl":
+                        _sec_tables.append(_e)
+
+                # spanning_text — from "Standard:" cell in any section table
+                if not spanning_text:
+                    for _tbl in _sec_tables:
+                        for _row in _tbl.findall(f"{W}tr"):
+                            _cells = _row.findall(f"{W}tc")
+                            if len(_cells) >= 2:
+                                _lbl = "".join(
+                                    t.text or "" for t in _cells[0].iter(f"{W}t")
+                                ).strip().lower()
+                                if "standard" in _lbl:
+                                    _raw = "".join(
+                                        t.text or "" for t in _cells[-1].iter(f"{W}t")
+                                    ).strip()
+                                    # Strip edition suffix e.g. "(Ed. 1.0)"
+                                    spanning_text = re.sub(
+                                        r'\s*\(Ed\..*?\)\s*$', '', _raw
+                                    ).strip()
                                     break
-                        break
+                        if spanning_text:
+                            break
+
+                # columns — read only from explicit tblHeader rows in the biggest
+                # template table. Never infer from data rows to avoid false positives.
+                if not columns:
+                    _best    = 0
+                    _big_tbl = None
+                    for _tbl in _sec_tables:
+                        _n = len(_tbl.findall(f"{W}tr"))
+                        if _n > _best:
+                            _best    = _n
+                            _big_tbl = _tbl
+                    if _big_tbl is not None:
+                        for _r in _big_tbl.findall(f"{W}tr"):
+                            _r_trPr = _r.find(f"{W}trPr")
+                            if _r_trPr is None or _r_trPr.find(f"{W}tblHeader") is None:
+                                continue
+                            _r_cells = _r.findall(f"{W}tc")
+                            # skip spanning rows (any cell with gridSpan)
+                            if any(_c.find(f"{W}tcPr/{W}gridSpan") is not None
+                                   for _c in _r_cells):
+                                continue
+                            if len(_r_cells) >= 2:
+                                _col_texts = [
+                                    "".join(t.text or "" for t in _c.iter(f"{W}t")).strip()
+                                    for _c in _r_cells
+                                ]
+                                if any(_col_texts):
+                                    columns = _col_texts
+                                    break
         except Exception:
             pass
+
+    # bail if we still can't locate the target section
+    if not heading_text:
+        return
 
     # ------------------------------------------------------------------
     # Locate the main compliance table (largest table under heading)
@@ -1020,12 +1077,29 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         _doc_body.insert(_tbl_idx, _pg_p)
 
     # ------------------------------------------------------------------
-    # Read column widths from the first full-width data row
+    # Read column widths from the first full-width data row.
+    # A "full-width" row is the first row where no cell has gridSpan
+    # and the cell count matches len(columns) (if known).
     # ------------------------------------------------------------------
+    # Determine true grid column count from tblGrid
+    grid_cols = len(out_tbl.findall(f"{W}tblGrid/{W}gridCol"))
+    if not grid_cols:
+        # fallback: scan rows for max cell count (accounting for gridspan)
+        for r in out_rows:
+            _cnt = sum(
+                int((c.find(f"{W}tcPr/{W}gridSpan") or type("", (), {"get": lambda s, k, d="1": d})()).get(f"{W}val", "1"))
+                for c in r.findall(f"{W}tc")
+            )
+            if _cnt > grid_cols:
+                grid_cols = _cnt
+
+    # Use columns count if provided, else fall back to grid
+    n_cols = len(columns) if columns else grid_cols
+
     out_widths: list[tuple[str, str]] = []
     for r in out_rows:
         cells = r.findall(f"{W}tc")
-        if len(cells) == len(columns):
+        if len(cells) == n_cols:
             for c in cells:
                 tcW = c.find(f"{W}tcPr/{W}tcW")
                 out_widths.append((
@@ -1033,7 +1107,7 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
                     tcW.get(f"{W}type", "dxa") if tcW is not None else "dxa",
                 ))
             break
-    while len(out_widths) < len(columns):
+    while len(out_widths) < n_cols:
         out_widths.append(("0", "dxa"))
 
     try:
@@ -1116,20 +1190,22 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     if spanning_text:
         span_row = _make_hdr_row(
             _make_hdr_cell(str(total_w), w_type, spanning_text,
-                           center=True, gridspan=len(columns)),
+                           center=True, gridspan=n_cols),
             row_height_twips=480,
         )
         out_tbl.insert(insert_idx, span_row)
         insert_idx += 1
 
-    # Row 2: column labels — height 300 twips (~5.3 mm)
-    col_cells = []
-    for ci, col_text in enumerate(columns):
-        w_val, w_type_val = out_widths[ci]
-        is_last = (ci == len(columns) - 1)
-        col_cells.append(_make_hdr_cell(w_val, w_type_val, col_text, center=is_last))
-    col_row = _make_hdr_row(*col_cells, row_height_twips=300)
-    out_tbl.insert(insert_idx, col_row)
+    # Row 2: column labels — only if column names were provided/detected
+    # Height 300 twips (~5.3 mm)
+    if columns:
+        col_cells = []
+        for ci, col_text in enumerate(columns):
+            w_val, w_type_val = out_widths[ci]
+            is_last = (ci == len(columns) - 1)
+            col_cells.append(_make_hdr_cell(w_val, w_type_val, col_text, center=is_last))
+        col_row = _make_hdr_row(*col_cells, row_height_twips=300)
+        out_tbl.insert(insert_idx, col_row)
 
 
 

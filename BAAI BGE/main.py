@@ -272,7 +272,7 @@ def main() -> None:
         # Step C: Fill template → save output
         print(f"\nFilling template …")
         fill_template(template_path, data_path, matches, output_path, product_name=product_name)
-        print(f"  Saved → {output_path}")
+        print(f"  Saved -> {output_path}")
 
     print("\nDone.")
 

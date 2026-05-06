@@ -54,7 +54,7 @@
             "Test Result"
         ],
         "compliance_table_header": {
-            "heading": "Compliance Checklist",
+            "heading": "",
             "spanning_header": "",
             "columns": [
                 "CI.",
