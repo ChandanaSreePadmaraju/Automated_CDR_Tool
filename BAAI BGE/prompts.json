@@ -55,8 +55,9 @@
         ],
         "compliance_table_header": {
             "heading": "Compliance Checklist",
+            "spanning_header": "",
             "columns": [
-                "ISO 17664-2 / Cl.",
+                "CI.",
                 "Requirement \u2013 Test",
                 "Result \u2013 Reference \u2013 Remark",
                 "Verdict"
@@ -75,7 +76,10 @@
                 "Copy of marking plate:": "Copy of marking plate:",
                 "General product information:": "General product information:",
                 "The product fulfils the requirements of ISO 17664-2:": "The product fulfils the requirements of ISO 17664-2:"
-            }
+            },
+            "row_copy_checkbox_only": [
+                "The product fulfils the requirements of"
+            ]
         }
     }
 }

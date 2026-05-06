@@ -165,6 +165,15 @@ def set_all_text_black(doc: Document) -> None:
             guidance_rStyle_ids.add(s.style_id)
 
     for rPr in doc.element.body.iter(f"{{{_NS}}}rPr"):
+        # Skip runs inside tblHeader rows — let them keep their natural style colour
+        parent_tr = next(
+            (a for a in rPr.iterancestors(f"{{{_NS}}}tr")), None
+        )
+        if parent_tr is not None:
+            trPr = parent_tr.find(f"{{{_NS}}}trPr")
+            if trPr is not None and trPr.find(f"{{{_NS}}}tblHeader") is not None:
+                continue
+
         # 1. Remove GuidanceChar rStyle
         rStyle = rPr.find(f"{{{_NS}}}rStyle")
         if rStyle is not None and rStyle.get(f"{{{_NS}}}val", "") in guidance_rStyle_ids:
@@ -913,10 +922,44 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
 
     heading_text: str = cfg.get("heading", "")
     columns: list = cfg.get("columns", [])
+    spanning_text: str = cfg.get("spanning_header", "")
     if not heading_text or not columns:
         return
 
     W = f"{{{_NS}}}"
+    XML_NS = "http://www.w3.org/XML/1998/namespace"
+
+    # Auto-detect spanning_header from the template's admin table "Standard:" row
+    # if prompts.json left it blank. Works for any ISO/IEC/EN standard template.
+    if not spanning_text and template_path and os.path.isfile(template_path):
+        try:
+            _td = Document(template_path)
+            _td_body = list(_td.element.body)
+            _td_h_ids = _heading_style_ids(_td)
+            for _i, _e in enumerate(_td_body):
+                if _e.tag == f"{W}p" and _para_style_id(_e) in _td_h_ids:
+                    if _para_text(_e).strip().lower() == heading_text.lower():
+                        for _nxt in _td_body[_i + 1:]:
+                            if _nxt.tag == f"{W}p" and _para_style_id(_nxt) in _td_h_ids:
+                                break
+                            if _nxt.tag == f"{W}tbl":
+                                # First (smallest) table under heading = admin info table
+                                for _row in _nxt.findall(f"{W}tr"):
+                                    _cells = _row.findall(f"{W}tc")
+                                    if len(_cells) >= 2:
+                                        _label = "".join(
+                                            t.text or "" for t in _cells[0].iter(f"{W}t")
+                                        ).strip().lower()
+                                        if "standard" in _label:
+                                            spanning_text = "".join(
+                                                t.text or "" for t in _cells[-1].iter(f"{W}t")
+                                            ).strip()
+                                            break
+                                if spanning_text:
+                                    break
+                        break
+        except Exception:
+            pass  # auto-detect failed, proceed without spanning row
     XML_NS = "http://www.w3.org/XML/1998/namespace"
 
     # ------------------------------------------------------------------
@@ -947,8 +990,9 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     if not out_rows:
         return
 
-    # Idempotency
-    if columns[0].lower() in "".join(
+    # Idempotency — check for spanning header first (if configured), else column[0]
+    _check_text = spanning_text if spanning_text else (columns[0] if columns else "")
+    if _check_text.lower() in "".join(
         t.text or "" for t in out_rows[0].iter(f"{W}t")
     ).strip().lower():
         return
@@ -1091,22 +1135,85 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         t.text = col_text
         t.set(f"{{{XML_NS}}}space", "preserve")
 
-    # Apply gray shading to all header cells so the column header row is
-    # visually distinct from the section-header data rows (which have fill=auto).
-    for cell in new_row.findall(f"{W}tc"):
-        tcPr = cell.find(f"{W}tcPr")
-        if tcPr is None:
-            tcPr = etree.SubElement(cell, f"{W}tcPr")
-            cell.insert(0, tcPr)
-        shd = tcPr.find(f"{W}shd")
-        if shd is None:
-            shd = etree.SubElement(tcPr, f"{W}shd")
-        shd.set(f"{W}val", "clear")
-        shd.set(f"{W}color", "auto")
-        shd.set(f"{W}fill", "D9D9D9")
-
-    # Prepend before the current first row
+    # Prepend column-header row before the current first data row
     out_tbl.insert(list(out_tbl).index(out_rows[0]), new_row)
+
+    # If a spanning header is configured, insert it before the column-header row.
+    # Style it like the Table 1 section-header rows (sz=22, all rFonts themes,
+    # color=auto), NOT like the watermark header in Table 0 (sz=28, cstheme only).
+    if spanning_text:
+        try:
+            total_w = sum(int(wv) for wv, _ in out_widths)
+        except (ValueError, TypeError):
+            total_w = 0
+        w_type = out_widths[0][1] if out_widths else "dxa"
+
+        span_row = etree.Element(f"{W}tr")
+        sp_trPr = etree.SubElement(span_row, f"{W}trPr")
+        etree.SubElement(sp_trPr, f"{W}cantSplit")
+        etree.SubElement(sp_trPr, f"{W}tblHeader")
+
+        sp_tc = etree.SubElement(span_row, f"{W}tc")
+        sp_tcPr = etree.SubElement(sp_tc, f"{W}tcPr")
+        sp_tcW = etree.SubElement(sp_tcPr, f"{W}tcW")
+        sp_tcW.set(f"{W}w", str(total_w))
+        sp_tcW.set(f"{W}type", w_type)
+        sp_gs = etree.SubElement(sp_tcPr, f"{W}gridSpan")
+        sp_gs.set(f"{W}val", str(len(columns)))
+        # No explicit fill — inherits from table style like every other row
+
+        sp_p = etree.SubElement(sp_tc, f"{W}p")
+        sp_pPr = etree.SubElement(sp_p, f"{W}pPr")
+        # Match Table 1 section-header paragraph style exactly
+        sp_ps = etree.SubElement(sp_pPr, f"{W}pStyle")
+        sp_ps.set(f"{W}val", "Default")
+        etree.SubElement(sp_pPr, f"{W}keepNext")
+        etree.SubElement(sp_pPr, f"{W}keepLines")
+        sp_sp = etree.SubElement(sp_pPr, f"{W}spacing")
+        sp_sp.set(f"{W}before", "66")
+        sp_sp.set(f"{W}after", "54")
+        sp_jc = etree.SubElement(sp_pPr, f"{W}jc")
+        sp_jc.set(f"{W}val", "center")
+        # pPr/rPr: same as section-header rows (sz=22, all three rFonts themes)
+        sp_pRpr = etree.SubElement(sp_pPr, f"{W}rPr")
+        sp_rf_p = etree.SubElement(sp_pRpr, f"{W}rFonts")
+        sp_rf_p.set(f"{W}asciiTheme", "minorHAnsi")
+        sp_rf_p.set(f"{W}hAnsiTheme", "minorHAnsi")
+        sp_rf_p.set(f"{W}cstheme", "minorHAnsi")
+        etree.SubElement(sp_pRpr, f"{W}b")
+        etree.SubElement(sp_pRpr, f"{W}bCs")
+        sp_col_p = etree.SubElement(sp_pRpr, f"{W}color")
+        sp_col_p.set(f"{W}val", "auto")
+        _sp_sz = etree.SubElement(sp_pRpr, f"{W}sz")
+        _sp_sz.set(f"{W}val", "22")
+        _sp_szCs = etree.SubElement(sp_pRpr, f"{W}szCs")
+        _sp_szCs.set(f"{W}val", "22")
+        sp_lg_p = etree.SubElement(sp_pRpr, f"{W}lang")
+        sp_lg_p.set(f"{W}val", "en-US")
+
+        sp_r = etree.SubElement(sp_p, f"{W}r")
+        sp_rPr = etree.SubElement(sp_r, f"{W}rPr")
+        sp_rf_r = etree.SubElement(sp_rPr, f"{W}rFonts")
+        sp_rf_r.set(f"{W}asciiTheme", "minorHAnsi")
+        sp_rf_r.set(f"{W}hAnsiTheme", "minorHAnsi")
+        sp_rf_r.set(f"{W}cstheme", "minorHAnsi")
+        etree.SubElement(sp_rPr, f"{W}b")
+        etree.SubElement(sp_rPr, f"{W}bCs")
+        sp_col_r = etree.SubElement(sp_rPr, f"{W}color")
+        sp_col_r.set(f"{W}val", "auto")
+        _sp_sz_r = etree.SubElement(sp_rPr, f"{W}sz")
+        _sp_sz_r.set(f"{W}val", "22")
+        _sp_szCs_r = etree.SubElement(sp_rPr, f"{W}szCs")
+        _sp_szCs_r.set(f"{W}val", "22")
+        sp_lg_r = etree.SubElement(sp_rPr, f"{W}lang")
+        sp_lg_r.set(f"{W}val", "en-US")
+        sp_t = etree.SubElement(sp_r, f"{W}t")
+        sp_t.text = spanning_text
+        sp_t.set(f"{{{XML_NS}}}space", "preserve")
+
+        # Insert spanning row at the same position as new_row, pushing new_row down
+        col_hdr_idx = list(out_tbl).index(new_row)
+        out_tbl.insert(col_hdr_idx, span_row)
 
     W = f"{{{_NS}}}"
     h_ids = _heading_style_ids(doc)
@@ -1136,7 +1243,8 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         return
 
     # Idempotency — skip if header already present
-    if columns[0].lower() in "".join(
+    _check2 = spanning_text if spanning_text else (columns[0] if columns else "")
+    if _check2.lower() in "".join(
         t.text or "" for t in rows[0].iter(f"{W}t")
     ).strip().lower():
         return
@@ -1155,81 +1263,73 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         cell_widths.append(("0", "dxa"))
 
     # ------------------------------------------------------------------
-    # Build the row from scratch using the template's section-header style.
-    # Every attribute below was read directly from the template file's
-    # compliance table section-header rows ("4 | Risk analysis", etc.).
+    # No template available — clone the first data row of the output table
+    # as a style donor (same approach as the primary donor-row path above).
+    # No font attributes are hardcoded here.
     # ------------------------------------------------------------------
     XML_NS = "http://www.w3.org/XML/1998/namespace"
 
-    new_row = etree.Element(f"{W}tr")
-    trPr = etree.SubElement(new_row, f"{W}trPr")
-    etree.SubElement(trPr, f"{W}cantSplit")
-    etree.SubElement(trPr, f"{W}tblHeader")
+    # Use the first row with exactly len(columns) cells as style donor
+    _donor = next((r for r in rows if len(r.findall(f"{W}tc")) == len(columns)), rows[0])
+    new_row = deepcopy(_donor)
 
+    # Ensure trPr has cantSplit + tblHeader
+    _trPr = new_row.find(f"{W}trPr")
+    if _trPr is None:
+        _trPr = etree.Element(f"{W}trPr")
+        new_row.insert(0, _trPr)
+    if _trPr.find(f"{W}cantSplit") is None:
+        _trPr.insert(0, etree.Element(f"{W}cantSplit"))
+    if _trPr.find(f"{W}tblHeader") is None:
+        etree.SubElement(_trPr, f"{W}tblHeader")
+
+    # Remove gridSpan on cloned cells so each becomes independent
+    for _c in new_row.findall(f"{W}tc"):
+        _tcPr = _c.find(f"{W}tcPr")
+        if _tcPr is not None:
+            _gs = _tcPr.find(f"{W}gridSpan")
+            if _gs is not None:
+                _tcPr.remove(_gs)
+
+    # Add / remove cells to exactly len(columns)
+    while len(new_row.findall(f"{W}tc")) < len(columns):
+        new_row.append(deepcopy(new_row.findall(f"{W}tc")[-1]))
+    for _extra in new_row.findall(f"{W}tc")[len(columns):]:
+        new_row.remove(_extra)
+
+    # Patch widths and text — same logic as donor-row path
     for ci, col_text in enumerate(columns):
-        w_val, w_type = cell_widths[ci]
+        _cell = new_row.findall(f"{W}tc")[ci]
+        _w_val, _w_type = cell_widths[ci]
+        _tcPr2 = _cell.find(f"{W}tcPr")
+        if _tcPr2 is None:
+            _tcPr2 = etree.SubElement(_cell, f"{W}tcPr")
+            _cell.insert(0, _tcPr2)
+        _tcW = _tcPr2.find(f"{W}tcW")
+        if _tcW is None:
+            _tcW = etree.SubElement(_tcPr2, f"{W}tcW")
+        _tcW.set(f"{W}w", _w_val)
+        _tcW.set(f"{W}type", _w_type)
 
-        tc = etree.SubElement(new_row, f"{W}tc")
+        _all_p = _cell.findall(f"{W}p")
+        for _ep in _all_p[1:]:
+            _cell.remove(_ep)
+        _p = _all_p[0] if _all_p else etree.SubElement(_cell, f"{W}p")
+        for _r in list(_p.findall(f"{W}r")):
+            _p.remove(_r)
 
-        # ---- tcPr -------------------------------------------------------
-        tcPr = etree.SubElement(tc, f"{W}tcPr")
-        tcW_e = etree.SubElement(tcPr, f"{W}tcW")
-        tcW_e.set(f"{W}w", w_val)
-        tcW_e.set(f"{W}type", w_type)
-        # Gray background on all header cells to distinguish from data rows
-        shd = etree.SubElement(tcPr, f"{W}shd")
-        shd.set(f"{W}val", "clear")
-        shd.set(f"{W}color", "auto")
-        shd.set(f"{W}fill", "D9D9D9")
-
-        # ---- paragraph --------------------------------------------------
-        p = etree.SubElement(tc, f"{W}p")
-
-        pPr = etree.SubElement(p, f"{W}pPr")
-        ps = etree.SubElement(pPr, f"{W}pStyle")
-        ps.set(f"{W}val", "Default")
-        etree.SubElement(pPr, f"{W}keepNext")
-        etree.SubElement(pPr, f"{W}keepLines")
-        sp = etree.SubElement(pPr, f"{W}spacing")
-        sp.set(f"{W}before", "66")
-        sp.set(f"{W}after", "54")
-        if ci == len(columns) - 1:         # Verdict → centre
-            jc = etree.SubElement(pPr, f"{W}jc")
-            jc.set(f"{W}val", "center")
-
-        # pPr/rPr  (paragraph-mark formatting — matches section-header rows)
-        pRpr = etree.SubElement(pPr, f"{W}rPr")
-        rf_p = etree.SubElement(pRpr, f"{W}rFonts")
-        rf_p.set(f"{W}asciiTheme", "minorHAnsi")
-        rf_p.set(f"{W}hAnsiTheme", "minorHAnsi")
-        rf_p.set(f"{W}cstheme",    "minorHAnsi")
-        etree.SubElement(pRpr, f"{W}b")
-        etree.SubElement(pRpr, f"{W}bCs")
-        col_p = etree.SubElement(pRpr, f"{W}color")
-        col_p.set(f"{W}val", "auto")
-        sz_p = etree.SubElement(pRpr, f"{W}sz");    sz_p.set(f"{W}val", "22")
-        szc_p = etree.SubElement(pRpr, f"{W}szCs"); szc_p.set(f"{W}val", "22")
-        lg_p = etree.SubElement(pRpr, f"{W}lang");  lg_p.set(f"{W}val", "en-US")
-
-        # ---- run --------------------------------------------------------
-        r_e = etree.SubElement(p, f"{W}r")
-
-        rPr = etree.SubElement(r_e, f"{W}rPr")
-        rf_r = etree.SubElement(rPr, f"{W}rFonts")
-        rf_r.set(f"{W}asciiTheme", "minorHAnsi")
-        rf_r.set(f"{W}hAnsiTheme", "minorHAnsi")
-        rf_r.set(f"{W}cstheme",    "minorHAnsi")
-        etree.SubElement(rPr, f"{W}b")
-        etree.SubElement(rPr, f"{W}bCs")
-        col_r = etree.SubElement(rPr, f"{W}color")
-        col_r.set(f"{W}val", "auto")
-        sz_r = etree.SubElement(rPr, f"{W}sz");    sz_r.set(f"{W}val", "22")
-        szc_r = etree.SubElement(rPr, f"{W}szCs"); szc_r.set(f"{W}val", "22")
-        lg_r = etree.SubElement(rPr, f"{W}lang");  lg_r.set(f"{W}val", "en-US")
-
-        t_e = etree.SubElement(r_e, f"{W}t")
-        t_e.text = col_text
-        t_e.set(f"{{{XML_NS}}}space", "preserve")
+        _pPr = _p.find(f"{W}pPr")
+        _base_rPr = _pPr.find(f"{W}rPr") if _pPr is not None else None
+        _r_new = etree.SubElement(_p, f"{W}r")
+        _new_rPr = deepcopy(_base_rPr) if _base_rPr is not None else etree.Element(f"{W}rPr")
+        if _new_rPr.find(f"{W}b") is None:
+            _new_rPr.insert(0, etree.Element(f"{W}b"))
+        if _new_rPr.find(f"{W}bCs") is None:
+            etree.SubElement(_new_rPr, f"{W}bCs")
+        _r_new.insert(0, _new_rPr)
+        _t = etree.SubElement(_r_new, f"{W}t")
+        _t.text = col_text
+        _t.set(f"{{{XML_NS}}}space", "preserve")
 
     # Prepend before the current first row
     tbl_elem.insert(list(tbl_elem).index(rows[0]), new_row)
@@ -1345,6 +1445,11 @@ def fill_table_from_source(doc: Document, data_doc_path: str | None) -> list[dic
     target_heading: str = cfg.get("target_heading", "")
     source_heading: str = cfg.get("source_heading", "")
     row_label_map: dict = cfg.get("row_label_map", {})
+    # Prefixes for rows where only the checkbox state should be copied;
+    # the template's own text is preserved unchanged.
+    checkbox_only_prefixes: list[str] = [
+        p.lower() for p in cfg.get("row_copy_checkbox_only", [])
+    ]
     if not target_heading or not source_heading or not row_label_map:
         return []
 
@@ -1354,6 +1459,54 @@ def fill_table_from_source(doc: Document, data_doc_path: str | None) -> list[dic
 
     def _cell_text(tc_elem) -> str:
         return "".join(t.text or "" for t in tc_elem.iter(f"{W}t")).strip()
+
+    def _get_checkbox_state(tc_elem) -> str | None:
+        """
+        Return the effective checked state ('0' or '1') of a FORMCHECKBOX in a cell.
+
+        Word uses two optional sub-elements inside <w:checkBox>:
+          w:checked  — current runtime state (takes priority when present)
+          w:default  — initial/default state (fallback)
+        We read w:checked first; fall back to w:default.
+        """
+        for fldChar in tc_elem.iter(f"{W}fldChar"):
+            if fldChar.get(f"{W}fldCharType") == "begin":
+                ffData = fldChar.find(f"{W}ffData")
+                if ffData is not None:
+                    cb = ffData.find(f"{W}checkBox")
+                    if cb is not None:
+                        checked = cb.find(f"{W}checked")
+                        if checked is not None:
+                            return checked.get(f"{W}val", "0")
+                        default = cb.find(f"{W}default")
+                        if default is not None:
+                            return default.get(f"{W}val", "0")
+        return None
+
+    def _set_checkbox_state(tc_elem, val: str) -> None:
+        """
+        Set the FORMCHECKBOX state in *tc_elem* to *val* ('0' or '1').
+
+        Writes to w:checked if it already exists (keeps it consistent with
+        w:default); otherwise writes to w:default.  Creates w:default if
+        neither element is present.
+        """
+        for fldChar in tc_elem.iter(f"{W}fldChar"):
+            if fldChar.get(f"{W}fldCharType") == "begin":
+                ffData = fldChar.find(f"{W}ffData")
+                if ffData is not None:
+                    cb = ffData.find(f"{W}checkBox")
+                    if cb is not None:
+                        checked = cb.find(f"{W}checked")
+                        if checked is not None:
+                            checked.set(f"{W}val", val)
+                        default = cb.find(f"{W}default")
+                        if default is not None:
+                            default.set(f"{W}val", val)
+                        else:
+                            d = etree.SubElement(cb, f"{W}default")
+                            d.set(f"{W}val", val)
+                        return
 
     def _find_table_after_heading_output(body_children, heading_text: str):
         for i, elem in enumerate(body_children):
@@ -1387,16 +1540,28 @@ def fill_table_from_source(doc: Document, data_doc_path: str | None) -> list[dic
                 best_tbl = elem
         return best_tbl if best_score > 0 else None
 
+    # Prefix used to normalise standard-specific "fulfils" rows so that inputs
+    # with different standards (ISO 17664-2, DIN 6868-157, IEC 62304, …) all
+    # resolve to the same lookup key regardless of which standard is named.
+    _FULFILS_PREFIX = "the product fulfils the requirements of"
+
+    def _normalise_label(lbl: str) -> str:
+        return _FULFILS_PREFIX if lbl.startswith(_FULFILS_PREFIX) else lbl
+
     # --- Load source doc ---
     from docx import Document as _Doc
     src_doc = _Doc(data_doc_path)
     src_children = list(src_doc.element.body)
-    src_key_labels = list(row_label_map.values())
+    # Include the generic "fulfils" prefix so the scorer can find tables that
+    # mention any standard (not just the ISO variant hard-coded in config).
+    src_key_labels = list(row_label_map.values()) + [_FULFILS_PREFIX]
     src_tbl = _find_source_table_by_content(src_children, src_key_labels)
     if src_tbl is None:
         return []
 
-    # Build map: lowercase source label → source tc element
+    # Build map: lowercase source label → source tc element.
+    # For "fulfils" rows also store the entry under the generic normalised key
+    # so it can be found regardless of which standard the source doc names.
     src_label_to_tc: dict = {}
     for tr in src_tbl.findall(f"{W}tr"):
         cells = tr.findall(f"{W}tc")
@@ -1404,11 +1569,18 @@ def fill_table_from_source(doc: Document, data_doc_path: str | None) -> list[dic
             continue
         cell_text = _cell_text(cells[0])
         if len(cells) == 2:
-            src_label_to_tc[cell_text.lower()] = cells[1]
+            key = cell_text.lower()
+            src_label_to_tc[key] = cells[1]
+            norm = _normalise_label(key)
+            if norm != key:
+                src_label_to_tc.setdefault(norm, cells[1])
         else:
             colon_pos = cell_text.find(":")
             label_key = (cell_text[:colon_pos + 1] if colon_pos != -1 else cell_text).lower()
             src_label_to_tc[label_key] = cells[0]
+            norm = _normalise_label(label_key)
+            if norm != label_key:
+                src_label_to_tc.setdefault(norm, cells[0])
 
     row_label_map_lower = {k.lower(): v.lower() for k, v in row_label_map.items()}
 
@@ -1436,11 +1608,33 @@ def fill_table_from_source(doc: Document, data_doc_path: str | None) -> list[dic
             label_key = label_lower
 
         src_key = row_label_map_lower.get(label_key)
+        # Fallback: normalise "fulfils" labels so any standard matches the
+        # ISO-specific key written in row_label_map.
+        if src_key is None:
+            norm_key = _normalise_label(label_key)
+            src_key = row_label_map_lower.get(norm_key)
         if src_key is None:
             continue
 
         src_tc = src_label_to_tc.get(src_key)
+        # Fallback: look up by normalised key (handles DIN / IEC / ISO variants).
         if src_tc is None:
+            src_tc = src_label_to_tc.get(_normalise_label(src_key))
+        if src_tc is None:
+            continue
+
+        # ── Checkbox-only rows ────────────────────────────────────────────
+        # For rows listed in row_copy_checkbox_only, preserve the template's
+        # own text and only copy the checked/unchecked state from the source.
+        target_cell = cells[1] if len(cells) == 2 else cells[0]
+        is_checkbox_only = any(label_key.startswith(p) for p in checkbox_only_prefixes)
+        if not is_checkbox_only:
+            # Also check the raw un-truncated label text for 1-column rows
+            is_checkbox_only = any(label_lower.startswith(p) for p in checkbox_only_prefixes)
+        if is_checkbox_only:
+            src_val = _get_checkbox_state(src_tc)
+            if src_val is not None:
+                _set_checkbox_state(target_cell, src_val)
             continue
 
         if len(cells) == 2:
@@ -1503,8 +1697,8 @@ def apply_all(doc: Document, product_name: str | None = None, data_doc_path: str
     strip_superscript_list_markers(doc)
     remove_sections(doc)
     remove_headings_only(doc)
-    prepend_compliance_table_header(doc, template_path)   # before set_all_text_black so header gets same colour pass
     set_all_text_black(doc)
+    prepend_compliance_table_header(doc, template_path)   # after set_all_text_black so header keeps auto/style colour
     remove_blank_paragraph_before_headings(doc)
     remove_blank_paragraph_after_headings(doc)
     inject_definitions_fixed_rows(doc)
