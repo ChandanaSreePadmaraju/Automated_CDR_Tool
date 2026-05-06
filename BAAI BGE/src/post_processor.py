@@ -1215,40 +1215,10 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         col_row = _make_hdr_row(*col_cells, row_height_twips=col_height)
         out_tbl.insert(insert_idx, col_row)
 
-    # -----------------------------------------------------------------------
-    # Mark the first row of sibling tables in the compliance section as
-    # tblHeader so Word repeats it when those tables span a page break.
-    # (e.g. the test-admin table whose Row 0 is the ISO title banner)
-    # No new rows are created and no styling is changed — only the
-    # tblHeader flag is set on the existing spanning first row.
-    # -----------------------------------------------------------------------
-    _in_sec2 = False
-    for _el in body_children:
-        if _el.tag == f"{W}p" and _para_style_id(_el) in h_ids:
-            if _para_text(_el).strip().lower() == heading_text.lower():
-                _in_sec2 = True
-            elif _in_sec2:
-                break
-            continue
-        if not _in_sec2 or _el.tag != f"{W}tbl" or _el is out_tbl:
-            continue
-        _sib_rows = _el.findall(f"{W}tr")
-        if not _sib_rows:
-            continue
-        _first_row = _sib_rows[0]
-        # Only promote to tblHeader when the first row is a single spanning cell
-        if len(_first_row.findall(f"{W}tc")) != 1:
-            continue
-        _fr_trPr = _first_row.find(f"{W}trPr")
-        if _fr_trPr is None:
-            _fr_trPr = etree.Element(f"{W}trPr")
-            _first_row.insert(0, _fr_trPr)
-        if _fr_trPr.find(f"{W}tblHeader") is None:
-            etree.SubElement(_fr_trPr, f"{W}tblHeader")
 
 
 # ---------------------------------------------------------------------------
-# Pass 16 — Normalize rFonts attributes to remove locale-specific overrides
+# Pass 16 ΓÇö Normalize rFonts attributes to remove locale-specific overrides
 # ---------------------------------------------------------------------------
 
 def normalize_rfonts(doc: Document) -> None:
