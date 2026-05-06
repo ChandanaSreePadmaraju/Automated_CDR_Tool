@@ -1038,7 +1038,24 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         return
 
     # ------------------------------------------------------------------
-    # Idempotency ΓÇö skip if tblHeader rows already present in table
+    # Clear Verdict cell for section-header rows (CI. = plain integer,
+    # e.g. "4", "5").  In the template these rows have a blank Verdict;
+    # the data doc sometimes fills them with "P" which is incorrect.
+    # ------------------------------------------------------------------
+    import re as _re
+    for _dr in out_rows:
+        _dr_cells = _dr.findall(f"{W}tc")
+        if not _dr_cells:
+            continue
+        _ci_txt = "".join(t.text or "" for t in _dr_cells[0].iter(f"{W}t")).strip()
+        if _re.fullmatch(r'\d+', _ci_txt):
+            # Section header row — wipe all runs from the last (Verdict) cell
+            for _p in _dr_cells[-1].findall(f"{W}p"):
+                for _run in _p.findall(f"{W}r"):
+                    _p.remove(_run)
+
+    # ------------------------------------------------------------------
+    # Idempotency — skip if tblHeader rows already present in table
     # ------------------------------------------------------------------
     _check_val = spanning_text.lower() if spanning_text else (columns[0].lower() if columns else "")
     first_trPr = out_rows[0].find(f"{W}trPr")
@@ -1106,40 +1123,30 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     w_type = out_widths[0][1] if out_widths else "dxa"
 
     # ------------------------------------------------------------------
-    # Styling — sniff from the output table's first data row so headers
-    # automatically match the template's own font, size, color, bold.
-    # prompts.json style block can override individual values.
+    # Styling — light grey, 9 pt, no bold, thin grey borders.
+    # These header rows are visually distinct from the data rows
+    # (compact, subdued) so they act as a subtle repeating label.
+    # Values can be overridden in prompts.json style block.
     # ------------------------------------------------------------------
     _style      = cfg.get("style", {})
     span_height = int(_style.get("span_row_height_twips", 480))
     col_height  = int(_style.get("col_row_height_twips",  300))
+    GREY        = _style.get("header_color",  "808080")
+    BORDER_CLR  = _style.get("border_color",  "BFBFBF")
+    FONT_SZ     = str(int(_style.get("font_size_halfpt", 18)))   # 18 half-pts = 9 pt
 
-    # Sniff rPr from the first data cell in the output table
-    _sniff_sz   = "22"   # 11 pt default
-    _sniff_bold = True
-    for _sr in out_rows:
-        _sc = _sr.findall(f"{W}tc")
-        if not _sc:
-            continue
-        _sp = _sc[0].find(f"{W}p")
-        if _sp is None:
-            continue
-        _srPr = _sp.find(f"{W}pPr/{W}rPr")
-        if _srPr is None:
-            _srPr = _sp.find(f"{W}r/{W}rPr")
-        if _srPr is not None:
-            _sz_e = _srPr.find(f"{W}sz")
-            if _sz_e is not None:
-                _sniff_sz = _sz_e.get(f"{W}val", _sniff_sz)
-            _sniff_bold = _srPr.find(f"{W}b") is not None
-        break
-
-    # Allow prompts.json overrides
-    FONT_SZ     = str(int(_style.get("font_size_halfpt", int(_sniff_sz))))
-    USE_BOLD    = _style.get("header_bold", _sniff_bold)
+    def _cell_borders(tcPr_el):
+        """Add thin light-grey borders on all four sides of a header cell."""
+        tcBorders = etree.SubElement(tcPr_el, f"{W}tcBorders")
+        for side in ("top", "left", "bottom", "right"):
+            b = etree.SubElement(tcBorders, f"{W}{side}")
+            b.set(f"{W}val",   "single")
+            b.set(f"{W}sz",    "4")
+            b.set(f"{W}space", "0")
+            b.set(f"{W}color", BORDER_CLR)
 
     def _make_hdr_cell(w_val, w_type_val, text, center=False, gridspan=None):
-        """Build a tblHeader cell styled to match the table's own data rows."""
+        """Build a tblHeader cell: light grey text, 9 pt, no bold, thin grey borders."""
         tc = etree.Element(f"{W}tc")
         tcPr = etree.SubElement(tc, f"{W}tcPr")
         tcW_e = etree.SubElement(tcPr, f"{W}tcW")
@@ -1148,6 +1155,7 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         if gridspan:
             gs = etree.SubElement(tcPr, f"{W}gridSpan")
             gs.set(f"{W}val", str(gridspan))
+        _cell_borders(tcPr)
 
         p = etree.SubElement(tc, f"{W}p")
         pPr = etree.SubElement(p, f"{W}pPr")
@@ -1155,17 +1163,15 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
             jc = etree.SubElement(pPr, f"{W}jc")
             jc.set(f"{W}val", "center")
         pRpr = etree.SubElement(pPr, f"{W}rPr")
-        if USE_BOLD:
-            etree.SubElement(pRpr, f"{W}b")
-            etree.SubElement(pRpr, f"{W}bCs")
+        clr_e = etree.SubElement(pRpr, f"{W}color")
+        clr_e.set(f"{W}val", GREY)
         etree.SubElement(pRpr, f"{W}sz").set(f"{W}val", FONT_SZ)
         etree.SubElement(pRpr, f"{W}szCs").set(f"{W}val", FONT_SZ)
 
         r = etree.SubElement(p, f"{W}r")
         rPr = etree.SubElement(r, f"{W}rPr")
-        if USE_BOLD:
-            etree.SubElement(rPr, f"{W}b")
-            etree.SubElement(rPr, f"{W}bCs")
+        clr_r = etree.SubElement(rPr, f"{W}color")
+        clr_r.set(f"{W}val", GREY)
         etree.SubElement(rPr, f"{W}sz").set(f"{W}val", FONT_SZ)
         etree.SubElement(rPr, f"{W}szCs").set(f"{W}val", FONT_SZ)
         t = etree.SubElement(r, f"{W}t")
