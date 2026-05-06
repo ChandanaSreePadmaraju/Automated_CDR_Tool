@@ -66,7 +66,8 @@
             "style": {
                 "header_color": "808080",
                 "border_color": "BFBFBF",
-                "font_size_halfpt": 18,
+                "span_font_size_halfpt": 28,
+                "col_font_size_halfpt": 22,
                 "span_row_height_twips": 480,
                 "col_row_height_twips": 300
             }

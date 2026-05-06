@@ -1109,12 +1109,13 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     # Styling — read from prompts.json compliance_table_header.style
     # (falls back to defaults if omitted)
     # ------------------------------------------------------------------
-    _style     = cfg.get("style", {})
-    GREY       = _style.get("header_color",          "808080")
-    BORDER_CLR = _style.get("border_color",          "BFBFBF")
-    FONT_SZ    = str(int(_style.get("font_size_halfpt",      18)))   # half-pts
-    span_height = int(_style.get("span_row_height_twips",   480))
-    col_height  = int(_style.get("col_row_height_twips",    300))
+    _style      = cfg.get("style", {})
+    GREY        = _style.get("header_color",           "808080")
+    BORDER_CLR  = _style.get("border_color",           "BFBFBF")
+    SPAN_FONT_SZ = str(int(_style.get("span_font_size_halfpt", 28)))  # half-pts — ISO banner row
+    COL_FONT_SZ  = str(int(_style.get("col_font_size_halfpt",  22)))  # half-pts — column label row
+    span_height = int(_style.get("span_row_height_twips",    480))
+    col_height  = int(_style.get("col_row_height_twips",     300))
 
     def _cell_borders(tcPr_el):
         """Override all cell borders with thin grey lines."""
@@ -1126,8 +1127,9 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
             b.set(f"{W}space", "0")
             b.set(f"{W}color", BORDER_CLR)
 
-    def _make_hdr_cell(w_val, w_type_val, text, center=False, gridspan=None):
-        """Build a tblHeader cell with grey text, 9 pt, no bold."""
+    def _make_hdr_cell(w_val, w_type_val, text, center=False, gridspan=None, font_sz=None):
+        """Build a tblHeader cell with grey text, no bold."""
+        _fsz = font_sz or SPAN_FONT_SZ
         tc = etree.Element(f"{W}tc")
         tcPr = etree.SubElement(tc, f"{W}tcPr")
         tcW_e = etree.SubElement(tcPr, f"{W}tcW")
@@ -1145,14 +1147,14 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
             jc.set(f"{W}val", "center")
         pRpr = etree.SubElement(pPr, f"{W}rPr")
         etree.SubElement(pRpr, f"{W}color").set(f"{W}val", GREY)
-        etree.SubElement(pRpr, f"{W}sz").set(f"{W}val", FONT_SZ)
-        etree.SubElement(pRpr, f"{W}szCs").set(f"{W}val", FONT_SZ)
+        etree.SubElement(pRpr, f"{W}sz").set(f"{W}val", _fsz)
+        etree.SubElement(pRpr, f"{W}szCs").set(f"{W}val", _fsz)
 
         r = etree.SubElement(p, f"{W}r")
         rPr = etree.SubElement(r, f"{W}rPr")
         etree.SubElement(rPr, f"{W}color").set(f"{W}val", GREY)
-        etree.SubElement(rPr, f"{W}sz").set(f"{W}val", FONT_SZ)
-        etree.SubElement(rPr, f"{W}szCs").set(f"{W}val", FONT_SZ)
+        etree.SubElement(rPr, f"{W}sz").set(f"{W}val", _fsz)
+        etree.SubElement(rPr, f"{W}szCs").set(f"{W}val", _fsz)
         t = etree.SubElement(r, f"{W}t")
         t.text = text
         t.set(f"{{{XML_NS}}}space", "preserve")
@@ -1183,7 +1185,7 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     if spanning_text:
         span_row = _make_hdr_row(
             _make_hdr_cell(str(total_w), w_type, spanning_text,
-                           center=True, gridspan=n_cols),
+                           center=True, gridspan=n_cols, font_sz=SPAN_FONT_SZ),
             row_height_twips=span_height,
         )
         out_tbl.insert(insert_idx, span_row)
@@ -1196,9 +1198,37 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         for ci, col_text in enumerate(columns):
             w_val, w_type_val = out_widths[ci]
             is_last = (ci == len(columns) - 1)
-            col_cells.append(_make_hdr_cell(w_val, w_type_val, col_text, center=is_last))
+            col_cells.append(_make_hdr_cell(w_val, w_type_val, col_text,
+                                            center=is_last, font_sz=COL_FONT_SZ))
         col_row = _make_hdr_row(*col_cells, row_height_twips=col_height)
         out_tbl.insert(insert_idx, col_row)
+
+    # ------------------------------------------------------------------
+    # Spacing: insert a blank paragraph after the test-admin table
+    # (i.e. between that table and the page-break paragraph before the
+    # compliance checklist), so the visual gap matches the template.
+    # ------------------------------------------------------------------
+    _doc_body2   = out_tbl.getparent()
+    _body_list2  = list(_doc_body2)
+    _tbl_idx2    = _body_list2.index(out_tbl)
+    # Walk backward to find the previous table (test-admin)
+    _prev_tbl_idx = None
+    for _bi in range(_tbl_idx2 - 1, -1, -1):
+        if _body_list2[_bi].tag == f"{W}tbl":
+            _prev_tbl_idx = _bi
+            break
+        if _body_list2[_bi].tag == f"{W}p" and _para_style_id(_body_list2[_bi]) in h_ids:
+            break
+    if _prev_tbl_idx is not None:
+        # Count blank paragraphs between the previous table and out_tbl
+        _gap_paras = [
+            _body_list2[_gi] for _gi in range(_prev_tbl_idx + 1, _tbl_idx2)
+            if _body_list2[_gi].tag == f"{W}p"
+        ]
+        if len(_gap_paras) < 2:
+            # Insert an extra blank paragraph right after the previous table
+            _spacer = etree.Element(f"{W}p")
+            _doc_body2.insert(_prev_tbl_idx + 1, _spacer)
 
     # ------------------------------------------------------------------
     # Also add the ISO spanning banner to any OTHER tables in the same
