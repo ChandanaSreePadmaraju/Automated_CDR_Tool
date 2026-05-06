@@ -14,7 +14,8 @@
         "Definitions & abbreviations": [0, 1]
     },
 
-    "sections_keep_first_n_tables": {"Compliance Checklist": 1},
+    "sections_keep_first_n_tables": {},
+    "sections_keep_first_n_auto": 1,
 
     "sections_keep_template_content": ["Purpose", "Scope"],
 
@@ -61,15 +62,23 @@
                 "Requirement \u2013 Test",
                 "Result \u2013 Reference \u2013 Remark",
                 "Verdict"
-            ]
+            ],
+            "style": {
+                "header_color": "808080",
+                "border_color": "BFBFBF",
+                "font_size_halfpt": 18,
+                "span_row_height_twips": 480,
+                "col_row_height_twips": 300
+            }
         },
         "header_footer_placeholders": [
             "<ProductName RX.Y>"
         ],
         "normalize_rfonts_remove_attributes": ["eastAsia", "eastAsiaTheme", "cs"],
         "fill_table_from_source": {
-            "target_heading": "Compliance Checklist",
+            "target_heading": "",
             "source_heading": "Test Administration",
+            "fulfils_row_prefix": "the product fulfils the requirements of",
             "row_label_map": {
                 "Model/Type reference:": "Sample Type (Identification of Design)",
                 "Ratings:":             "Ratings",

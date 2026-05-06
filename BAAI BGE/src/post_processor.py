@@ -15,6 +15,8 @@ from docx import Document
 from docx.oxml.ns import qn
 from lxml import etree
 
+from src import detect_compliance_heading
+
 _PROMPTS_FILE = os.path.join(os.path.dirname(__file__), "..", "prompts.json")
 with open(_PROMPTS_FILE, "r", encoding="utf-8") as _f:
     _CFG: dict = json.load(_f).get("post_processing", {})
@@ -929,29 +931,16 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     # All three can be left blank/empty in prompts.json — the template
     # docx is the single source of truth.
     # ------------------------------------------------------------------
+    if not heading_text and template_path and os.path.isfile(template_path):
+        heading_text = detect_compliance_heading(template_path)
+
     if template_path and os.path.isfile(template_path):
         try:
             _td      = Document(template_path)
             _td_body = list(_td.element.body)
             _td_h_ids = _heading_style_ids(_td)
 
-            # Step 1 — detect heading_text: heading that precedes the
-            # biggest multi-column table (≥3 cols) in the template.
-            if not heading_text:
-                _cur_h    = ""
-                _best_rows = 0
-                for _e in _td_body:
-                    if _e.tag == f"{W}p" and _para_style_id(_e) in _td_h_ids:
-                        _cur_h = _para_text(_e).strip()
-                    elif _e.tag == f"{W}tbl" and _cur_h:
-                        _rows = _e.findall(f"{W}tr")
-                        if _rows:
-                            _r0_cells = _rows[0].findall(f"{W}tc")
-                            if len(_r0_cells) >= 3 and len(_rows) > _best_rows:
-                                _best_rows = len(_rows)
-                                heading_text = _cur_h
-
-            # Step 2 — collect all tables inside that section
+            # Collect all tables inside the compliance section
             if heading_text:
                 _in_sec     = False
                 _sec_tables: list = []
@@ -1117,11 +1106,15 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     w_type = out_widths[0][1] if out_widths else "dxa"
 
     # ------------------------------------------------------------------
-    # Styling constants — grey, compact, no bold (matches screenshot)
+    # Styling — read from prompts.json compliance_table_header.style
+    # (falls back to defaults if omitted)
     # ------------------------------------------------------------------
-    GREY       = "808080"
-    BORDER_CLR = "BFBFBF"
-    FONT_SZ    = "18"   # 9 pt
+    _style     = cfg.get("style", {})
+    GREY       = _style.get("header_color",          "808080")
+    BORDER_CLR = _style.get("border_color",          "BFBFBF")
+    FONT_SZ    = str(int(_style.get("font_size_halfpt",      18)))   # half-pts
+    span_height = int(_style.get("span_row_height_twips",   480))
+    col_height  = int(_style.get("col_row_height_twips",    300))
 
     def _cell_borders(tcPr_el):
         """Override all cell borders with thin grey lines."""
@@ -1191,7 +1184,7 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         span_row = _make_hdr_row(
             _make_hdr_cell(str(total_w), w_type, spanning_text,
                            center=True, gridspan=n_cols),
-            row_height_twips=480,
+            row_height_twips=span_height,
         )
         out_tbl.insert(insert_idx, span_row)
         insert_idx += 1
@@ -1204,7 +1197,7 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
             w_val, w_type_val = out_widths[ci]
             is_last = (ci == len(columns) - 1)
             col_cells.append(_make_hdr_cell(w_val, w_type_val, col_text, center=is_last))
-        col_row = _make_hdr_row(*col_cells, row_height_twips=300)
+        col_row = _make_hdr_row(*col_cells, row_height_twips=col_height)
         out_tbl.insert(insert_idx, col_row)
 
 
@@ -1294,7 +1287,7 @@ def _remap_images_in_elem(elem, src_doc) -> list[dict]:
     return images
 
 
-def fill_table_from_source(doc: Document, data_doc_path: str | None) -> list[dict]:
+def fill_table_from_source(doc: Document, data_doc_path: str | None, template_path: str | None = None) -> list[dict]:
     """
     Fill cells in the preserved ISO info table by copying full paragraph XML
     (runs, formatting, images) from the matching rows in the source document.
@@ -1320,6 +1313,13 @@ def fill_table_from_source(doc: Document, data_doc_path: str | None) -> list[dic
     target_heading: str = cfg.get("target_heading", "")
     source_heading: str = cfg.get("source_heading", "")
     row_label_map: dict = cfg.get("row_label_map", {})
+    # Read fulfils normalisation prefix from config (no hardcoded strings)
+    _FULFILS_PREFIX: str = cfg.get(
+        "fulfils_row_prefix", "the product fulfils the requirements of"
+    )
+    # Auto-detect target_heading from template when blank
+    if not target_heading and template_path and os.path.isfile(template_path):
+        target_heading = detect_compliance_heading(template_path)
     # Prefixes for rows where only the checkbox state should be copied;
     # the template's own text is preserved unchanged.
     checkbox_only_prefixes: list[str] = [
@@ -1418,7 +1418,7 @@ def fill_table_from_source(doc: Document, data_doc_path: str | None) -> list[dic
     # Prefix used to normalise standard-specific "fulfils" rows so that inputs
     # with different standards (ISO 17664-2, DIN 6868-157, IEC 62304, …) all
     # resolve to the same lookup key regardless of which standard is named.
-    _FULFILS_PREFIX = "the product fulfils the requirements of"
+    # Moved to config — _FULFILS_PREFIX already set from cfg above.
 
     def _normalise_label(lbl: str) -> str:
         return _FULFILS_PREFIX if lbl.startswith(_FULFILS_PREFIX) else lbl
@@ -1579,6 +1579,6 @@ def apply_all(doc: Document, product_name: str | None = None, data_doc_path: str
     inject_definitions_fixed_rows(doc)
     sort_tables_alphabetically(doc)
     normalize_rfonts(doc)
-    extra_image_parts = fill_table_from_source(doc, data_doc_path)
+    extra_image_parts = fill_table_from_source(doc, data_doc_path, template_path=template_path)
     mark_toc_dirty(doc)
     return extra_image_parts

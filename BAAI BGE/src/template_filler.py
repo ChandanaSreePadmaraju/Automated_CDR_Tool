@@ -19,7 +19,7 @@ from docx import Document
 from lxml import etree
 
 from src.content_extractor import extract_section, extract_pre_heading_content, _NUMID_OFFSET
-from src import post_processor
+from src import post_processor, detect_compliance_heading
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +531,12 @@ def fill_template(
         k.lower(): v
         for k, v in _prompts_cfg.get("sections_keep_first_n_tables", {}).items()
     }
+    # Auto-detect compliance heading and apply sections_keep_first_n_auto
+    _auto_keep: int = _prompts_cfg.get("sections_keep_first_n_auto", 0)
+    if _auto_keep and os.path.isfile(template_path):
+        _auto_h = detect_compliance_heading(template_path)
+        if _auto_h:
+            _keep_n.setdefault(_auto_h.lower(), _auto_keep)
     _remap_cols: dict[str, list] = {
         k.lower(): v
         for k, v in _prompts_cfg.get("sections_remap_table_columns", {}).items()
