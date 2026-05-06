@@ -902,19 +902,18 @@ def inject_definitions_fixed_rows(doc: Document) -> None:
 
 def prepend_compliance_table_header(doc: Document, template_path: str | None = None) -> None:
     """
-    Insert a separate compact grey header table before the compliance data table.
+    Prepend grey header rows (tblHeader) to the compliance table so they
+    repeat on every page, styled as a compact grey label:
+      - Grey text (808080), 9 pt, no bold
+      - Cell-level thin grey borders (overrides table black borders)
+      - tblHeader flag so Word repeats them at the top of every page
 
-    Layout produced (all on a fresh page):
+    Layout produced (on a fresh page):
       [page break]
-      [2-row mini header table — thin grey borders, grey text, ~9 pt, no bold]
-        Row 1: spanning cell with the standard name, centred
-        Row 2: CI. | Requirement – Test | Result – Reference – Remark | Verdict
-      [small gap paragraph]
-      [main compliance data table — unchanged, starts with "4 | Risk analysis"]
-
-    Nothing is hardcoded: column widths are read from the main table's first
-    data row; the spanning text is auto-detected from the template's admin
-    table "Standard:" cell if prompts.json leaves it blank.
+      [main compliance table — tblHeader rows at top repeat every page]
+        Row 0 [tblHeader]: spanning cell — standard name, centred, grey 9pt
+        Row 1 [tblHeader]: CI. | Requirement–Test | Result–Ref–Remark | Verdict, grey 9pt
+        Row 2+: data rows unchanged
     """
     cfg: dict = _CFG.get("compliance_table_header", {})
     if not cfg:
@@ -985,28 +984,26 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     if out_tbl is None:
         return
 
+    out_rows = out_tbl.findall(f"{W}tr")
+    if not out_rows:
+        return
+
+    # ------------------------------------------------------------------
+    # Idempotency — skip if tblHeader rows already present in table
+    # ------------------------------------------------------------------
+    _check_val = spanning_text.lower() if spanning_text else (columns[0].lower() if columns else "")
+    first_trPr = out_rows[0].find(f"{W}trPr")
+    if first_trPr is not None and first_trPr.find(f"{W}tblHeader") is not None:
+        # tblHeader rows already inserted
+        return
+
+    # ------------------------------------------------------------------
+    # Page break: compliance table must start at top of a new page
+    # ------------------------------------------------------------------
     _doc_body = out_tbl.getparent()
     _body_list = list(_doc_body)
     _tbl_idx   = _body_list.index(out_tbl)
-
-    # ------------------------------------------------------------------
-    # Idempotency — if a mini header table is already present before the
-    # main table, skip. Only check small tables (≤ 3 rows); the admin
-    # table (18 rows) also contains the spanning text but must not trigger.
-    # ------------------------------------------------------------------
-    _check_val = spanning_text.lower() if spanning_text else (columns[0].lower() if columns else "")
-    for _prev in _body_list[:_tbl_idx]:
-        if _prev.tag == f"{W}tbl":
-            _prev_rows = _prev.findall(f"{W}tr")
-            if len(_prev_rows) <= 3:  # mini header table only; skip large admin table
-                _prev_text = "".join(t.text or "" for t in _prev.iter(f"{W}t")).strip().lower()
-                if _check_val and _check_val in _prev_text:
-                    return
-
-    # ------------------------------------------------------------------
-    # Ensure a page break exists immediately before the mini header table
-    # ------------------------------------------------------------------
-    _prev_el = _body_list[_tbl_idx - 1] if _tbl_idx > 0 else None
+    _prev_el   = _body_list[_tbl_idx - 1] if _tbl_idx > 0 else None
     _existing_br = _prev_el.find(f".//{W}br") if _prev_el is not None else None
     _has_pg_break = (
         _existing_br is not None
@@ -1018,12 +1015,10 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         _pg_br = etree.SubElement(_pg_r, f"{W}br")
         _pg_br.set(f"{W}type", "page")
         _doc_body.insert(_tbl_idx, _pg_p)
-        _tbl_idx += 1  # main table shifted by one
 
     # ------------------------------------------------------------------
-    # Read column widths from main table's first full-width data row
+    # Read column widths from the first full-width data row
     # ------------------------------------------------------------------
-    out_rows   = out_tbl.findall(f"{W}tr")
     out_widths: list[tuple[str, str]] = []
     for r in out_rows:
         cells = r.findall(f"{W}tc")
@@ -1045,26 +1040,24 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
     w_type = out_widths[0][1] if out_widths else "dxa"
 
     # ------------------------------------------------------------------
-    # Build the mini header table
-    #   - Thin grey borders (single, sz=4, color BFBFBF)
-    #   - Grey text (808080), no bold, 9 pt (sz=18)
+    # Styling constants — grey, compact, no bold (matches screenshot)
     # ------------------------------------------------------------------
-    GREY        = "808080"
-    BORDER_CLR  = "BFBFBF"
-    FONT_SZ     = "18"   # 9 pt
+    GREY       = "808080"
+    BORDER_CLR = "BFBFBF"
+    FONT_SZ    = "18"   # 9 pt
 
-    def _border_set(parent_el):
-        """Attach a full border set with thin grey lines to parent_el."""
-        bdr = etree.SubElement(parent_el, f"{W}tblBorders")
+    def _cell_borders(tcPr_el):
+        """Override all cell borders with thin grey lines."""
+        tcBdr = etree.SubElement(tcPr_el, f"{W}tcBorders")
         for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
-            b = etree.SubElement(bdr, f"{W}{side}")
+            b = etree.SubElement(tcBdr, f"{W}{side}")
             b.set(f"{W}val",   "single")
             b.set(f"{W}sz",    "4")
             b.set(f"{W}space", "0")
             b.set(f"{W}color", BORDER_CLR)
 
-    def _grey_cell(w_val, w_type_val, text, center=False, gridspan=None):
-        """Build a single table cell with grey-styled text."""
+    def _make_hdr_cell(w_val, w_type_val, text, center=False, gridspan=None):
+        """Build a tblHeader cell with grey text, 9 pt, no bold."""
         tc = etree.Element(f"{W}tc")
         tcPr = etree.SubElement(tc, f"{W}tcPr")
         tcW_e = etree.SubElement(tcPr, f"{W}tcW")
@@ -1073,66 +1066,61 @@ def prepend_compliance_table_header(doc: Document, template_path: str | None = N
         if gridspan:
             gs = etree.SubElement(tcPr, f"{W}gridSpan")
             gs.set(f"{W}val", str(gridspan))
+        _cell_borders(tcPr)
 
         p = etree.SubElement(tc, f"{W}p")
         pPr = etree.SubElement(p, f"{W}pPr")
         if center:
             jc = etree.SubElement(pPr, f"{W}jc")
             jc.set(f"{W}val", "center")
-        # paragraph-mark rPr — keeps style on last paragraph mark
         pRpr = etree.SubElement(pPr, f"{W}rPr")
-        _c = etree.SubElement(pRpr, f"{W}color"); _c.set(f"{W}val", GREY)
-        _s = etree.SubElement(pRpr, f"{W}sz");   _s.set(f"{W}val", FONT_SZ)
+        etree.SubElement(pRpr, f"{W}color").set(f"{W}val", GREY)
+        etree.SubElement(pRpr, f"{W}sz").set(f"{W}val", FONT_SZ)
         etree.SubElement(pRpr, f"{W}szCs").set(f"{W}val", FONT_SZ)
 
         r = etree.SubElement(p, f"{W}r")
         rPr = etree.SubElement(r, f"{W}rPr")
-        _c2 = etree.SubElement(rPr, f"{W}color"); _c2.set(f"{W}val", GREY)
-        _s2 = etree.SubElement(rPr, f"{W}sz");   _s2.set(f"{W}val", FONT_SZ)
+        etree.SubElement(rPr, f"{W}color").set(f"{W}val", GREY)
+        etree.SubElement(rPr, f"{W}sz").set(f"{W}val", FONT_SZ)
         etree.SubElement(rPr, f"{W}szCs").set(f"{W}val", FONT_SZ)
         t = etree.SubElement(r, f"{W}t")
         t.text = text
         t.set(f"{{{XML_NS}}}space", "preserve")
         return tc
 
-    mini_tbl = etree.Element(f"{W}tbl")
+    def _make_hdr_row(*cells_el):
+        """Wrap cells into a tblHeader row."""
+        row = etree.Element(f"{W}tr")
+        trPr = etree.SubElement(row, f"{W}trPr")
+        etree.SubElement(trPr, f"{W}cantSplit")
+        etree.SubElement(trPr, f"{W}tblHeader")
+        for c in cells_el:
+            row.append(c)
+        return row
 
-    # tblPr: width + thin grey borders
-    tblPr = etree.SubElement(mini_tbl, f"{W}tblPr")
-    tblW_e = etree.SubElement(tblPr, f"{W}tblW")
-    tblW_e.set(f"{W}w",    str(total_w))
-    tblW_e.set(f"{W}type", w_type)
-    _border_set(tblPr)
+    # ------------------------------------------------------------------
+    # Build and insert tblHeader rows into the MAIN compliance table
+    # (so Word repeats them at the top of every page automatically)
+    # ------------------------------------------------------------------
+    insert_idx = list(out_tbl).index(out_rows[0])
 
-    # Row 1: spanning cell — standard name, centred
+    # Row 1: spanning cell — standard name, centred (only if we have text)
     if spanning_text:
-        row1 = etree.Element(f"{W}tr")
-        etree.SubElement(etree.SubElement(row1, f"{W}trPr"), f"{W}cantSplit")
-        row1.append(_grey_cell(str(total_w), w_type, spanning_text,
-                               center=True, gridspan=len(columns)))
-        mini_tbl.append(row1)
+        span_row = _make_hdr_row(
+            _make_hdr_cell(str(total_w), w_type, spanning_text,
+                           center=True, gridspan=len(columns))
+        )
+        out_tbl.insert(insert_idx, span_row)
+        insert_idx += 1
 
-    # Row 2: column-name cells
-    row2 = etree.Element(f"{W}tr")
-    etree.SubElement(etree.SubElement(row2, f"{W}trPr"), f"{W}cantSplit")
+    # Row 2: column labels
+    col_cells = []
     for ci, col_text in enumerate(columns):
-        is_last = (ci == len(columns) - 1)
         w_val, w_type_val = out_widths[ci]
-        row2.append(_grey_cell(w_val, w_type_val, col_text, center=is_last))
-    mini_tbl.append(row2)
-
-    # Small gap paragraph between header table and main table
-    gap_p = etree.Element(f"{W}p")
-    gap_pPr = etree.SubElement(gap_p, f"{W}pPr")
-    gap_sp = etree.SubElement(gap_pPr, f"{W}spacing")
-    gap_sp.set(f"{W}before", "40")
-    gap_sp.set(f"{W}after",  "40")
-
-    # Insert: mini_tbl then gap_p just before the main compliance table.
-    # After both inserts the order will be:
-    #   page-break paragraph → mini_tbl → gap_p → main compliance table
-    _doc_body.insert(_tbl_idx, gap_p)    # gap lands at _tbl_idx; main shifts to +1
-    _doc_body.insert(_tbl_idx, mini_tbl) # mini_tbl at _tbl_idx; gap at +1; main at +2
+        is_last = (ci == len(columns) - 1)
+        col_cells.append(_make_hdr_cell(w_val, w_type_val, col_text, center=is_last))
+    col_row = _make_hdr_row(*col_cells)
+    out_tbl.insert(insert_idx, col_row)
 
 
 
