@@ -1,0 +1,30 @@
+# Version-control metadata
+.git/
+.gitignore
+
+# Local dev environments
+.venv/
+venv/
+
+# Python bytecode
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Local secrets — never bake into the image
+.env
+
+# Logs
+logs/
+
+# Test + coverage artefacts (not needed at runtime)
+tests/
+pytest.ini
+.coveragerc
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Documentation
+*.md

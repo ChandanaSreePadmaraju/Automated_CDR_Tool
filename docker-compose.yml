@@ -1,0 +1,17 @@
+services:
+  automated-cdr:
+    build:
+      context: "./BAAI BGE"
+      dockerfile: Dockerfile
+    image: automated-cdr-tool:latest
+    ports:
+      - "8501:8501"
+    volumes:
+      # Persist uploaded/output documents outside the container
+      - ./data:/app/data
+    environment:
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_PORT=8501
+      # Set to 1 when building/running behind a corporate SSL proxy
+      - HF_HUB_DISABLE_SSL_VERIFICATION=1
+    restart: unless-stopped
