@@ -16,6 +16,10 @@ BAAI BGE/Input*.docx
 BAAI BGE/Template*.docx
 BAAI BGE/Review*.docx
 
+# Documentation / daily update logs (local only)
+UPDATES.md
+BAAI BGE/BAAI BGE Updates.md
+
 # Word temporary lock files
 ~$*
 
