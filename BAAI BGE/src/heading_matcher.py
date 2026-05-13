@@ -14,6 +14,7 @@ import ssl
 # Must happen BEFORE sentence_transformers / huggingface_hub are imported.
 # ---------------------------------------------------------------------------
 os.environ["HF_HUB_DISABLE_SSL_VERIFICATION"] = "1"
+os.environ.setdefault("HF_HUB_VERBOSITY", "error")   # suppress unauthenticated-request warning
 ssl._create_default_https_context = ssl._create_unverified_context
 
 import httpx as _httpx

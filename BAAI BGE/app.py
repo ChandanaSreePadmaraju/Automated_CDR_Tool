@@ -118,8 +118,15 @@ def get_model():
     return load_model()
 
 
-def derive_output_name(input_filename: str) -> str:
-    return f"op_{input_filename}"
+def derive_output_name(input_filename: str, product_name: str | None = None) -> str:
+    """Derive output filename, stripping product name suffix if found."""
+    import re as _re
+    basename = os.path.basename(input_filename)
+    if product_name and product_name in basename:
+        idx = basename.find(product_name)
+        stem = basename[:idx].rstrip()
+        return f"op_{stem}.docx"
+    return f"op_{basename}"
 
 
 def _load_prompts() -> dict:
@@ -129,23 +136,64 @@ def _load_prompts() -> dict:
 
 
 def auto_detect_product_name(docx_bytes: bytes, filename: str = "") -> str | None:
-    """Detect product name from the filename.
+    """Detect product name from doc custom properties or table label/value pairs.
+    Falls back to prompts.json 'product_name' if nothing found in the document.
 
-    Extracts text after '(YYYY) ' at end of stem.
-      e.g. 'D001352871 Test Record ISO 17664-2 (2021) Azurion HW R3.docx'
-           → 'Azurion HW R3'
-    Returns None if no such pattern found — placeholder stays unreplaced
-    rather than using the document type name from core properties.
+    Strategy (in order):
+      1. Word custom properties (docProps/custom.xml)
+      2. Table rows where left cell is an exact product label
     """
     import re as _re
-    if filename:
-        stem = os.path.splitext(os.path.basename(filename))[0]
-        m = _re.search(r'\(\d{4}\)\s+(.+)$', stem)
-        if m:
-            name = m.group(1).strip()
-            # Strip trailing copy/revision suffixes like " (3)", " (2)" etc.
-            name = _re.sub(r'\s*\(\d+\)\s*$', '', name).strip()
-            return name or None
+    import zipfile as _zf
+    from xml.etree import ElementTree as _ET
+    import tempfile as _tmp
+
+    # ── 1. Custom properties ─────────────────────────────────────────────────
+    try:
+        with _zf.ZipFile(io.BytesIO(docx_bytes), 'r') as z:
+            if 'docProps/custom.xml' in z.namelist():
+                xml = z.read('docProps/custom.xml')
+                root = _ET.fromstring(xml)
+                for prop in root:
+                    name_attr = prop.get('name', '')
+                    if 'product' in name_attr.lower():
+                        for child in prop:
+                            if child.text and child.text.strip():
+                                return child.text.strip()
+    except Exception:
+        pass
+
+    # ── 2. Table label/value pairs (strict) ──────────────────────────────────
+    _label_re = _re.compile(
+        r'^product(?:\s+(?:name|identification|id|type))?\s*:\s*$',
+        _re.IGNORECASE
+    )
+    try:
+        from docx import Document as _Document
+        with _tmp.NamedTemporaryFile(suffix='.docx', delete=False) as tf:
+            tf.write(docx_bytes)
+            tf_path = tf.name
+        doc = _Document(tf_path)
+        import os as _os
+        _os.unlink(tf_path)
+        for table in doc.tables:
+            for row in table.rows:
+                cells = row.cells
+                if len(cells) >= 2:
+                    label = cells[0].text.strip()
+                    value = cells[1].text.strip()
+                    n_paras = len([p for p in cells[1].paragraphs if p.text.strip()])
+                    if (
+                        _label_re.match(label)
+                        and value
+                        and '\n' not in value
+                        and n_paras <= 1
+                        and len(value) <= 80
+                    ):
+                        return value
+    except Exception:
+        pass
+
     return None
 
 
@@ -256,7 +304,7 @@ with st.sidebar:
     st.divider()
     st.markdown(
         "**Product name** is auto-detected from each input document's "
-        "Word core properties (title → subject → description).  \n"
+        "Word custom properties or table label/value cells.  \n"
         "Falls back to `product_name` in *prompts.json* if not found."
     )
 
@@ -346,7 +394,7 @@ if run_btn:
 
         st.session_state.results.append({
             "input_name":   inp.name,
-            "out_name":     derive_output_name(inp.name),
+            "out_name":     derive_output_name(inp.name, detected_name),
             "bytes":        out_bytes,
             "matches":      matches,
             "product_name": detected_name,

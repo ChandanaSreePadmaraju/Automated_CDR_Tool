@@ -45,24 +45,62 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 
 def auto_detect_product_name(doc_path: str) -> str | None:
-    """Read product name from the document's Word core properties,
-    then fall back to parsing from the filename.
+    """Extract product name from the document content/properties.
 
-    Strategy:
-      1. Core properties: title → subject → description
-      2. Filename parsing: text after '(YYYY) ' at end of stem
-         e.g. 'Input1_D001352871 Test Record ISO 17664-2 (2021) Azurion HW R3.docx'
-              → 'Azurion HW R3'
+    Strategy (in order):
+      1. Word custom properties (docProps/custom.xml) — any property whose
+         name contains 'product'
+      2. Scan body tables for a 2-column row where the left cell text is
+         exactly a product label (e.g. 'Product name', 'Product identification')
+         and the right cell is a short single-line value (≤ 80 chars)
+    Returns None if nothing found — caller falls back to prompts.json default.
     """
     import re
-    # Filename: extract product name after '(YEAR) ' pattern
-    stem = os.path.splitext(os.path.basename(doc_path))[0]
-    m = re.search(r'\((\d{4})\)\s+(.+)$', stem)
-    if m:
-        name = m.group(2).strip()
-        # Strip trailing copy/revision suffixes like " (3)", " (2)" etc.
-        name = re.sub(r'\s*\(\d+\)\s*$', '', name).strip()
-        return name or None
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    # ── 1. Custom properties (docProps/custom.xml) ───────────────────────────
+    try:
+        with zipfile.ZipFile(doc_path, 'r') as z:
+            if 'docProps/custom.xml' in z.namelist():
+                xml = z.read('docProps/custom.xml')
+                root = ET.fromstring(xml)
+                for prop in root:
+                    name_attr = prop.get('name', '')
+                    if 'product' in name_attr.lower():
+                        for child in prop:
+                            if child.text and child.text.strip():
+                                return child.text.strip()
+    except Exception:
+        pass
+
+    # ── 2. Table label/value pairs — strict matching ─────────────────────────
+    _label_re = re.compile(
+        r'^product(?:\s+(?:name|identification|id|type))?\s*:\s*$',
+        re.IGNORECASE
+    )
+    try:
+        from docx import Document as _Document
+        doc = _Document(doc_path)
+        for table in doc.tables:
+            for row in table.rows:
+                cells = row.cells
+                if len(cells) >= 2:
+                    label = cells[0].text.strip()
+                    value = cells[1].text.strip()
+                    # Require explicit colon in label, single paragraph/line value
+                    n_paras = len([p for p in cells[1].paragraphs if p.text.strip()])
+                    if (
+                        _label_re.match(label)
+                        and value
+                        and '\n' not in value
+                        and n_paras <= 1
+                        and len(value) <= 80
+                    ):
+                        return value
+    except Exception:
+        pass
+
     return None
 
 
@@ -163,9 +201,15 @@ def main() -> None:
     _prompts_path = os.path.join(BASE_DIR, "prompts.json")
     with open(_prompts_path, "r", encoding="utf-8") as _pf:
         _prompts = json.load(_pf)
-    product_name = args.product_name or auto_detect_product_name(data_path)
+    # Resolution order:
+    #   1. --product-name CLI flag
+    #   2. Extracted from document content/properties
+    #   3. prompts.json "product_name" (default fallback)
+    product_name = (args.product_name
+                    or auto_detect_product_name(data_path)
+                    or _prompts.get("product_name"))
     if product_name:
-        print(f"  Product name      : {product_name} (auto-detected)")
+        print(f"  Product name      : {product_name}")
     else:
         print("  Product name      : not detected — header/footer placeholders will not be replaced")
     threshold    = args.threshold if args.threshold is not None else float(_prompts.get("threshold", 0.6))
@@ -204,18 +248,11 @@ def main() -> None:
     # ── Process each template ──────────────────────────────────────────────
     for idx, template_path in enumerate(template_paths, start=1):
 
-        # Determine output path
+        # Determine output path — always overwrite op{idx}_<base>
         if args.output and len(template_paths) == 1:
             output_path = os.path.abspath(args.output)
         else:
             output_path = build_output_path(output_dir, idx, base)
-
-        # Auto-increment op index: if op1_ exists, try op2_, op3_, …
-        if os.path.isfile(output_path):
-            next_op = idx + 1
-            while os.path.isfile(build_output_path(output_dir, next_op, base)):
-                next_op += 1
-            output_path = build_output_path(output_dir, next_op, base)
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 

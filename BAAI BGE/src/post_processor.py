@@ -149,8 +149,10 @@ def set_all_text_black(doc: Document) -> None:
     if not _CFG.get("set_all_text_black", False):
         return
 
+    _black_color: str = _CFG.get("black_text_color", "000000")
+
     # Build set of rStyle ids whose style name contains any of the
-    # styles_to_remove names ΓÇö these are character-style variants
+    # styles_to_remove names — these are character-style variants
     # (e.g. "GuidanceChar") that must also be stripped so they cannot
     # override the forced black colour.  Driven by prompts.json so no
     # style names are hardcoded here.
@@ -188,7 +190,7 @@ def set_all_text_black(doc: Document) -> None:
 
         # 3. Insert explicit black color as first child so it takes effect
         black = etree.Element(f"{{{_NS}}}color")
-        black.set(f"{{{_NS}}}val", "000000")
+        black.set(f"{{{_NS}}}val", _black_color)
         rPr.insert(0, black)
 
     # Also apply to headers and footers ΓÇö they are separate XML parts not in body
@@ -206,7 +208,7 @@ def set_all_text_black(doc: Document) -> None:
                     if color is not None:
                         rPr.remove(color)
                     black = etree.Element(f"{{{_NS}}}color")
-                    black.set(f"{{{_NS}}}val", "000000")
+                    black.set(f"{{{_NS}}}val", _black_color)
                     rPr.insert(0, black)
             except Exception:
                 pass
@@ -265,6 +267,60 @@ def _sort_table(tbl_elem) -> None:
     tbl_elem.append(header)
     for r in data_rows:
         tbl_elem.append(r)
+
+
+# ---------------------------------------------------------------------------
+# Pass 13b — Sort reference table by reference number
+# ---------------------------------------------------------------------------
+
+def sort_tables_by_ref_number(doc: Document) -> None:
+    """
+    For each heading listed in CFG["sort_table_by_ref_number_under_headings"],
+    sort the first table after it using a natural sort on the first column.
+    Natural sort treats embedded numbers numerically so:
+      [EU 2021/2226] < [REF-1] < [REF-2] < ... < [REF-10] < [REF-11]
+    No hardcoded prefixes — works for any reference format.
+    Header row is kept in place.
+    """
+    import re as _re
+    targets: list[str] = _CFG.get("sort_table_by_ref_number_under_headings", [])
+    if not targets:
+        return
+
+    h_ids = _heading_style_ids(doc)
+    body = list(doc.element.body)
+    targets_lower = [t.strip().lower() for t in targets]
+
+    def _natural_key(tr):
+        tc = tr.find(f"{{{_NS}}}tc")
+        if tc is None:
+            return []
+        text = "".join(t.text or "" for t in tc.iter(f"{{{_NS}}}t")).strip()
+        inner = _re.sub(r'^\[|\]$', '', text).strip()  # strip outer [ ]
+        # Split into alternating non-digit / digit chunks for natural ordering
+        parts = _re.split(r'(\d+)', inner.lower())
+        return [int(p) if p.isdigit() else p for p in parts]
+
+    for i, elem in enumerate(body):
+        if elem.tag != f"{{{_NS}}}p" or _para_style_id(elem) not in h_ids:
+            continue
+        if _para_text(elem).strip().lower() not in targets_lower:
+            continue
+
+        for nxt in body[i + 1:]:
+            if nxt.tag == f"{{{_NS}}}p" and _para_style_id(nxt) in h_ids:
+                break
+            if nxt.tag == f"{{{_NS}}}tbl":
+                rows = nxt.findall(f"{{{_NS}}}tr")
+                if len(rows) > 1:
+                    header, *data_rows = rows
+                    data_rows.sort(key=_natural_key)
+                    for r in rows:
+                        nxt.remove(r)
+                    nxt.append(header)
+                    for r in data_rows:
+                        nxt.append(r)
+                break
 
 
 # ---------------------------------------------------------------------------
@@ -719,12 +775,15 @@ def strip_inline_angle_brackets(doc: Document) -> None:
     Remove standalone '<' and '>' runs from every paragraph (including inside
     table cells), and strip inline '<...>' comment substrings.
 
-    Handles three cases:
-    1. Standalone bracket runs: a run whose only text is '<' or '>' ΓÇö removed.
-    2. Single-run inline comment: '<...>' fully within one run's text ΓÇö stripped.
+    Handles four cases:
+    1. Standalone bracket runs: a run whose only text is '<' or '>' — removed.
+    2. Single-run inline comment: '<...>' fully within one run's text — stripped.
     3. Multi-run inline comment: '<' in one run and '>' in a later run of the
-       same paragraph ΓÇö all runs from the opening '<' to the closing '>' are
+       same paragraph — all runs from the opening '<' to the closing '>' are
        cleaned so the bracketed span is removed.
+    4. Cross-paragraph spans: '<' in one paragraph and '>' in a later paragraph
+       within the same table cell (or body sequence) — all paragraphs between
+       them (inclusive) are removed / trimmed.
     """
     if not _CFG.get("strip_inline_angle_brackets", False):
         return
@@ -734,7 +793,7 @@ def strip_inline_angle_brackets(doc: Document) -> None:
     def _strip_para(p_elem) -> None:
         runs = list(p_elem.findall(f"{{{_NS}}}r"))
 
-        # Pass A ΓÇö standalone bracket runs and single-run inline comments
+        # Pass A — standalone bracket runs and single-run inline comments
         for r in runs:
             t_elems = r.findall(f"{{{_NS}}}t")
             run_text = "".join(t.text or "" for t in t_elems).strip()
@@ -749,7 +808,7 @@ def strip_inline_angle_brackets(doc: Document) -> None:
                     for t in t_elems[1:]:
                         t.text = ""
 
-        # Pass B ΓÇö multi-run inline comments (re-read after Pass A removals)
+        # Pass B — multi-run inline comments (re-read after Pass A removals)
         runs = list(p_elem.findall(f"{{{_NS}}}r"))
         open_run_idx = None
         for idx, r in enumerate(runs):
@@ -757,35 +816,118 @@ def strip_inline_angle_brackets(doc: Document) -> None:
             if open_run_idx is None:
                 lt_pos = run_text.find("<")
                 if lt_pos != -1:
-                    # Check the rest of this run ΓÇö if '>' is also here, no span needed
                     after = run_text[lt_pos:]
                     if ">" not in after:
                         open_run_idx = idx
-                        # Truncate this run at the '<'
                         for t in r.findall(f"{{{_NS}}}t"):
                             t.text = (t.text or "")[:lt_pos] if lt_pos == 0 else run_text[:lt_pos]
                             break
             else:
                 gt_pos = run_text.find(">")
                 if gt_pos != -1:
-                    # Keep text after '>'
                     remainder = run_text[gt_pos + 1:]
                     for t in r.findall(f"{{{_NS}}}t"):
                         t.text = remainder
                         break
-                    # Remove runs strictly between open_run_idx and idx
                     for mid in runs[open_run_idx + 1 : idx]:
                         parent = mid.getparent()
                         if parent is not None:
                             parent.remove(mid)
                     open_run_idx = None
                 else:
-                    # Entirely inside comment span ΓÇö blank it out
                     for t in r.findall(f"{{{_NS}}}t"):
                         t.text = ""
 
+    def _para_full_text(p_elem) -> str:
+        return "".join(t.text or "" for t in p_elem.iter(f"{{{_NS}}}t"))
+
+    def _strip_cross_para_spans(p_elems: list) -> None:
+        """Strip cross-paragraph <...> spans within a list of sibling paragraphs."""
+        in_span = False
+        to_remove = []
+        open_para = None
+        for p in p_elems:
+            text = _para_full_text(p)
+            if not in_span:
+                lt = text.find("<")
+                if lt != -1:
+                    gt = text.find(">", lt)
+                    if gt == -1:
+                        # Opens here, doesn't close — mark open
+                        in_span = True
+                        open_para = p
+                        # Trim text from '<' onwards in all runs
+                        for r in p.findall(f"{{{_NS}}}r"):
+                            rt = "".join(t.text or "" for t in r.findall(f"{{{_NS}}}t"))
+                            if "<" in rt:
+                                lp = rt.find("<")
+                                for t in r.findall(f"{{{_NS}}}t"):
+                                    t.text = rt[:lp]
+                                    break
+                                # blank remaining runs in this para
+                                runs = list(p.findall(f"{{{_NS}}}r"))
+                                blanking = False
+                                for rr in runs:
+                                    if blanking:
+                                        for t in rr.findall(f"{{{_NS}}}t"):
+                                            t.text = ""
+                                    rrt = "".join(t.text or "" for t in rr.findall(f"{{{_NS}}}t"))
+                                    if "<" in rrt:
+                                        blanking = True
+                                break
+            else:
+                # We are inside a cross-para span
+                gt = text.find(">")
+                if gt != -1:
+                    # Span closes here — keep text after '>'
+                    remainder = text[gt + 1:].strip()
+                    if remainder:
+                        # Keep this para but with only text after '>'
+                        for r in list(p.findall(f"{{{_NS}}}r")):
+                            rt = "".join(t.text or "" for t in r.findall(f"{{{_NS}}}t"))
+                            if ">" in rt:
+                                gp = rt.find(">")
+                                for t in r.findall(f"{{{_NS}}}t"):
+                                    t.text = rt[gp + 1:]
+                                    break
+                                # blank runs before this one
+                                runs = list(p.findall(f"{{{_NS}}}r"))
+                                for rr in runs:
+                                    rrt = "".join(t.text or "" for t in rr.findall(f"{{{_NS}}}t"))
+                                    if ">" in rrt:
+                                        break
+                                    for t in rr.findall(f"{{{_NS}}}t"):
+                                        t.text = ""
+                                break
+                    else:
+                        to_remove.append(p)
+                    in_span = False
+                    open_para = None
+                else:
+                    # Entirely inside span — remove whole paragraph
+                    to_remove.append(p)
+        for p in to_remove:
+            parent = p.getparent()
+            if parent is not None:
+                parent.remove(p)
+
+    # Per-paragraph single-para stripping
     for p_elem in doc.element.body.iter(f"{{{_NS}}}p"):
         _strip_para(p_elem)
+
+    # Cross-paragraph stripping within each table cell
+    for tc in doc.element.body.iter(f"{{{_NS}}}tc"):
+        paras = tc.findall(f"{{{_NS}}}p")
+        if len(paras) > 1:
+            _strip_cross_para_spans(paras)
+
+    # Cross-paragraph stripping in body-level paragraphs (not inside tables)
+    body_paras = [
+        e for e in doc.element.body
+        if e.tag == f"{{{_NS}}}p"
+    ]
+    if len(body_paras) > 1:
+        _strip_cross_para_spans(body_paras)
 
 
 # Pass 6
@@ -1596,6 +1738,7 @@ def apply_all(doc: Document, product_name: str | None = None, data_doc_path: str
     remove_blank_paragraph_after_headings(doc)
     inject_definitions_fixed_rows(doc)
     sort_tables_alphabetically(doc)
+    sort_tables_by_ref_number(doc)
     normalize_rfonts(doc)
     extra_image_parts = fill_table_from_source(doc, data_doc_path, template_path=template_path)
     mark_toc_dirty(doc)

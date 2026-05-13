@@ -41,7 +41,9 @@ def _strip_inline_sectpr(elem) -> None:
             pPr.remove(s)
 
 
-def _build_remapped_table(tmpl_tbl, data_tbl, col_indices: list, ns: str):
+def _build_remapped_table(tmpl_tbl, data_tbl, col_indices: list, ns: str,
+                          prefer_template_rows: bool = False,
+                          placeholder_colors: set | None = None):
     """
     Return a new <w:tbl> element that:
       - Keeps the template table's properties (tblPr) and header row exactly
@@ -49,7 +51,57 @@ def _build_remapped_table(tmpl_tbl, data_tbl, col_indices: list, ns: str):
         columns listed in *col_indices*
       - Applies the template's per-column cell properties (widths, borders)
         so the output table looks like the template, not the data doc.
+
+    Color-aware row handling (always active):
+      - Template rows whose text is BLACK / auto / no-color are "fixed content"
+        → kept from the template as-is (never overwritten by the data doc).
+      - Template rows that have PURPLE-colored text are "placeholders"
+        → replaced by the matching data-doc row (matched by normalised
+          first-column key) if one exists, otherwise dropped.
+      - Data-doc rows whose key does NOT appear in the template at all
+        are appended as new add-on rows.
+
+    *prefer_template_rows* is kept for backward compatibility but color
+    detection now drives the logic automatically.
     """
+    import re as _re
+
+    if placeholder_colors is None:
+        placeholder_colors = set()
+    _PURPLE_COLORS = {c.lower() for c in placeholder_colors}
+
+    def _row_is_black(tr) -> bool:
+        """Return True when the row contains NO purple-colored runs."""
+        for r_elem in tr.iter(f"{W}r"):
+            rPr = r_elem.find(f"{W}rPr")
+            if rPr is None:
+                continue
+            color_elem = rPr.find(f"{W}color")
+            if color_elem is not None:
+                val = color_elem.get(f"{W}val", "auto").lower()
+                if val in _PURPLE_COLORS:
+                    return False
+        return True
+
+    def _norm_key(tr) -> str:
+        """Normalise first-column text for row matching.
+        Strips brackets, parens, angle brackets, whitespace and lowercases."""
+        tc = tr.find(f"{W}tc")
+        if tc is None:
+            return ""
+        raw = "".join(t.text or "" for t in tc.iter(f"{W}t")).strip()
+        return _re.sub(r'[\[\]()<>\s]', '', raw).lower()
+
+    def _row_is_guidance(tr) -> bool:
+        """Return True when the row is a template guidance row.
+        A row is guidance if its combined first-cell text is wrapped in < > or
+        starts with '<' — these are instruction rows, not permanent content."""
+        tc = tr.find(f"{W}tc")
+        if tc is None:
+            return False
+        raw = "".join(t.text or "" for t in tc.iter(f"{W}t")).strip()
+        return raw.startswith('<')
+
     W = f"{{{ns}}}"
 
     data_rows = data_tbl.findall(f"{W}tr")
@@ -57,6 +109,20 @@ def _build_remapped_table(tmpl_tbl, data_tbl, col_indices: list, ns: str):
     # Deep-copy the whole template table (preserves tblPr, tblGrid, header)
     result = copy.deepcopy(tmpl_tbl)
     result_rows = result.findall(f"{W}tr")
+
+    # Classify each template data row as black (keep) or purple (replace)
+    tmpl_black_keys: dict[str, object] = {}   # key → tr element (black rows to keep)
+    tmpl_purple_keys: set[str] = set()         # keys of purple placeholder rows
+
+    if len(result_rows) > 1:
+        for tr in result_rows[1:]:
+            k = _norm_key(tr)
+            if not k:
+                continue
+            if _row_is_black(tr) and not _row_is_guidance(tr):
+                tmpl_black_keys[k] = tr
+            else:
+                tmpl_purple_keys.add(k)
 
     # Remove everything after the first (header) row
     for row in result_rows[1:]:
@@ -69,11 +135,25 @@ def _build_remapped_table(tmpl_tbl, data_tbl, col_indices: list, ns: str):
             tcPr = tc.find(f"{W}tcPr")
             tmpl_tcPr_list.append(copy.deepcopy(tcPr) if tcPr is not None else None)
 
+    # Track which black-row keys have been emitted (to avoid duplicates)
+    emitted_black: set[str] = set()
+
     # Build new data rows from data_tbl (skip its header row)
     for data_row in data_rows[1:]:
         data_cells = data_row.findall(f"{W}tc")
         if not data_cells:
             continue
+
+        dk = _norm_key(data_row)
+
+        # If this key is a BLACK template row → emit the template row (once)
+        if dk and dk in tmpl_black_keys and dk not in emitted_black:
+            result.append(copy.deepcopy(tmpl_black_keys[dk]))
+            emitted_black.add(dk)
+            continue
+
+        # If this key is a PURPLE template row → replace with data row (remapped)
+        # Also handles keys that are entirely new (not in template at all) as add-ons
 
         new_row = copy.deepcopy(data_row)
         # Remove all cells from the copied row
@@ -98,6 +178,12 @@ def _build_remapped_table(tmpl_tbl, data_tbl, col_indices: list, ns: str):
             new_row.append(new_tc)
 
         result.append(new_row)
+
+    # Append any black template rows that were never matched by a data row
+    # (e.g. template has a fixed EU-regulation row not present in the data doc)
+    for k, tr in tmpl_black_keys.items():
+        if k not in emitted_black:
+            result.append(copy.deepcopy(tr))
 
     return result
 
@@ -541,6 +627,15 @@ def fill_template(
         k.lower(): v
         for k, v in _prompts_cfg.get("sections_remap_table_columns", {}).items()
     }
+    # prefer_template_rows: for these sections, rows that already exist in the
+    # template (matched by first-column key) are kept from the template unchanged;
+    # only rows new in the data doc are appended in remapped form.
+    _prefer_tmpl_rows: set[str] = {
+        h.lower() for h in _prompts_cfg.get("sections_prefer_template_rows", [])
+    }
+    _placeholder_colors: set[str] = {
+        c.lower() for c in _prompts_cfg.get("template_placeholder_colors", [])
+    }
     # filter_headings: for these sections, skip any extracted item that is a
     # heading paragraph (avoids sub-headings like "Test Administration" appearing
     # in the Compliance Checklist section).
@@ -669,7 +764,11 @@ def fill_template(
             if saved_tmpl_tbl is not None and data_tbl_xml is not None:
                 data_tbl_elem = etree.fromstring(data_tbl_xml)
                 _strip_inline_sectpr(data_tbl_elem)
-                merged = _build_remapped_table(saved_tmpl_tbl, data_tbl_elem, col_indices, ns)
+                merged = _build_remapped_table(
+                    saved_tmpl_tbl, data_tbl_elem, col_indices, ns,
+                    prefer_template_rows=(tmpl_h_lower in _prefer_tmpl_rows),
+                    placeholder_colors=_placeholder_colors,
+                )
                 anchor = _insert_xml_after(anchor, etree.tostring(merged, encoding="unicode").encode())
 
             continue  # section fully handled — skip normal insert
