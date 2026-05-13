@@ -584,43 +584,6 @@ def _merge_numbering(output_bytes: bytes, data_doc_path: str) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# TOC refresh via Word COM (Windows only)
-# ---------------------------------------------------------------------------
-
-def _refresh_toc_via_word(doc_path: str) -> None:
-    """
-    Open the saved document with Microsoft Word (invisible), update every
-    Table of Contents field, and save.  This produces a fully rendered TOC
-    without any user interaction.
-
-    Silently skipped if:
-      • pywin32 is not installed, or
-      • Microsoft Word is not installed, or
-      • any COM error occurs (e.g. running inside Docker/Linux).
-    """
-    try:
-        import win32com.client as win32
-        import pythoncom
-        pythoncom.CoInitialize()
-        word = win32.Dispatch("Word.Application")
-        word.Visible = False
-        word.DisplayAlerts = False
-        try:
-            abs_path = os.path.abspath(doc_path)
-            doc = word.Documents.Open(abs_path)
-            for toc in doc.TablesOfContents:
-                toc.Update()
-            doc.Save()
-            doc.Close(False)
-            print(f"TOC updated in {os.path.basename(doc_path)}")
-        finally:
-            word.Quit()
-            pythoncom.CoUninitialize()
-    except Exception as exc:
-        print(f"[TOC refresh skipped] {exc}")
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -898,4 +861,3 @@ def fill_template(
         fh.write(final_bytes)
 
     print(f"\nSaved -> {output_path}")
-    _refresh_toc_via_word(output_path)
