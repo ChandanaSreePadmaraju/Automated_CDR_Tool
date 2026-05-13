@@ -1393,15 +1393,61 @@ def mark_toc_dirty(doc: Document) -> None:
     """
     Mark every TOC field as dirty so Word auto-updates the Table of Contents
     when the document is first opened.
+
+    Word TOC fields span multiple paragraphs:
+      para A: <w:fldChar w:fldCharType="begin"/>
+      para B: <w:instrText> TOC ...</w:instrText>
+      para N: <w:fldChar w:fldCharType="end"/>
+
+    So we must scan the flat list of body children, find each "begin"
+    fldChar, then look ahead until we hit the matching "end" to check
+    whether the field instruction is a TOC.  If it is, we set w:dirty="1"
+    on the begin fldChar.
+
+    We also set <w:updateFields w:val="1"/> in document settings so that
+    Word refreshes ALL fields (including the TOC) on first open, regardless
+    of whether the dirty flag is present.
     """
     W = f"{{{_NS}}}"
-    for p_elem in doc.element.body.iter(f"{W}p"):
-        instr_texts = [(t.text or "").strip() for t in p_elem.iter(f"{W}instrText")]
-        if not any(txt.upper().startswith("TOC") for txt in instr_texts):
-            continue
-        for fldChar in p_elem.iter(f"{W}fldChar"):
-            if fldChar.get(f"{W}fldCharType") == "begin":
-                fldChar.set(f"{W}dirty", "1")
+
+    # ── 1. Collect all fldChar / instrText elements in document order ───────
+    all_elems = []  # list of (element, tag_local)
+    for elem in doc.element.body.iter():
+        tag = elem.tag
+        if tag in (f"{W}fldChar", f"{W}instrText"):
+            all_elems.append(elem)
+
+    # ── 2. Walk through and find begin→end pairs that contain "TOC" ─────────
+    i = 0
+    while i < len(all_elems):
+        elem = all_elems[i]
+        if elem.tag == f"{W}fldChar" and elem.get(f"{W}fldCharType") == "begin":
+            begin_elem = elem
+            # Look ahead for instrText and end fldChar
+            is_toc = False
+            j = i + 1
+            while j < len(all_elems):
+                ahead = all_elems[j]
+                if ahead.tag == f"{W}instrText":
+                    if (ahead.text or "").strip().upper().startswith("TOC"):
+                        is_toc = True
+                elif ahead.tag == f"{W}fldChar" and ahead.get(f"{W}fldCharType") == "end":
+                    break
+                j += 1
+            if is_toc:
+                begin_elem.set(f"{W}dirty", "1")
+        i += 1
+
+    # ── 3. Set updateFields in document settings so Word refreshes on open ──
+    settings_part = doc.settings.element
+    W_SETTINGS = _NS
+    update_tag = f"{{{W_SETTINGS}}}updateFields"
+    existing = settings_part.find(update_tag)
+    if existing is None:
+        update_elem = etree.SubElement(settings_part, update_tag)
+        update_elem.set(f"{{{W_SETTINGS}}}val", "1")
+    else:
+        existing.set(f"{{{W_SETTINGS}}}val", "1")
 
 # ---------------------------------------------------------------------------
 # Pass 17 ΓÇö Fill ISO info table cells from source doc's matching table
